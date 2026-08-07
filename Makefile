@@ -11,6 +11,8 @@ CARGO := cargo
 EXAMPLE ?= 01_single_machine
 ARGS ?=
 PREFIX ?= $(HOME)/.local
+AUDIT_DB ?= $(TOP_DIR)/target/advisory-db
+AUDIT_IGNORES ?= --ignore RUSTSEC-2023-0071
 
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
 
@@ -18,7 +20,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t integration remote-test examples-smoke check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
+.PHONY: build b compile c run r test t integration remote-test examples-smoke audit check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
 
 build:
 	@$(CARGO) build --lib
@@ -49,6 +51,9 @@ remote-test:
 
 examples-smoke:
 	@$(CARGO) run --example 05_all_exchanges
+
+audit:
+	@$(CARGO) audit --db $(AUDIT_DB) $(AUDIT_IGNORES)
 
 check:
 	@$(CARGO) check --all-targets
@@ -102,6 +107,7 @@ help:
 	@echo "  integration  Run integration tests"
 	@echo "  remote-test  Run the forced-QUIC referral test"
 	@echo "  examples-smoke Run the bounded exchange example"
+	@echo "  audit        Scan dependencies for security advisories"
 	@echo "  check        Run cargo check on all targets"
 	@echo "  check-all    Run cargo check on all targets/all features"
 	@echo "  test-all     Run cargo test on all targets/all features"

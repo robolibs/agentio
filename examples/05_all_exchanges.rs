@@ -58,28 +58,40 @@ struct AudioFeedback {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    run(false)
+}
+
+fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = tracing_subscriber::fmt::try_init();
 
     println!("============================================================");
     println!("  agentio: Master Example Testing All 5 Exchange Patterns   ");
     println!("============================================================");
 
     // Create Server Agent
-    let server_agent = Agent::builder()
+    let mut server_builder = Agent::builder()
         .identity(IdentitySource::Random)
         .name("server-agent")
         .directory(DirectoryMode::Replicated)
-        .allow_any_peer()
-        .build()?;
+        .allow_any_peer();
+    if force_quic {
+        server_builder = server_builder.skip_shm();
+    }
+    let server_agent = server_builder.build()?;
 
     // Create Client Agent (bootstrapped with Server Agent's EndpointId)
-    let client_agent = Agent::builder()
+    let mut client_builder = Agent::builder()
         .identity(IdentitySource::Random)
         .name("client-agent")
         .directory(DirectoryMode::Replicated)
         .allow_any_peer()
-        .bootstrap([server_agent.endpoint_id()])
-        .build()?;
+        .bootstrap([server_agent.endpoint_id()]);
+    if force_quic {
+        client_builder = client_builder.skip_shm();
+    }
+    let client_agent = client_builder.build()?;
+    assert_eq!(server_agent.shared_memory_disabled(), force_quic);
+    assert_eq!(client_agent.shared_memory_disabled(), force_quic);
 
     let _ = server_agent.wait_for_direct_addresses(Duration::from_secs(1));
     let _ = client_agent.wait_for_direct_addresses(Duration::from_secs(1));

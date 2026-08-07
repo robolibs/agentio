@@ -105,9 +105,8 @@ fn unlisted_forced_quic_client_is_rejected() {
         .unwrap();
     let mut publisher = server.publish::<RemoteSample>("/remote/rejected").unwrap();
     let mut subscriber = client
-        .by_id(server_id)
-        .unwrap()
-        .subscribe::<RemoteSample>("/remote/rejected")
+        .node()
+        .subscriber::<RemoteSample>(server.endpoint_addr(), "/remote/rejected")
         .unwrap();
 
     for sequence in 0..4 {

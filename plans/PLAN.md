@@ -14,7 +14,7 @@
 - **Category**: correctness, security, tests, architecture, dependencies, DX,
   performance, release, and documentation
 - **Planned at**: commit `df87e97`, 2026-08-07
-- **Overall status**: TODO
+- **Overall status**: DONE
 
 ## Mandatory repository rules
 
@@ -348,7 +348,7 @@ After the operator establishes a baseline:
 | 8 | Fix naming and participant contract | P2 | M | 6 | DONE |
 | 9 | Repair examples and benchmarks | P2 | M | 4, 6 | DONE |
 | 10 | Align documentation and release model | P2 | M | 1-9 | DONE |
-| 11 | Run final security and release gates | P1 | M | 1-10 | TODO |
+| 11 | Run final security and release gates | P1 | M | 1-10 | DONE |
 
 ## Phase 0: Establish the baseline and decisions
 
@@ -852,23 +852,23 @@ clippy, rustdoc, and advisory gates report no blocking findings.
 
 ## Final done criteria
 
-- [ ] An operator-approved baseline SHA is recorded.
-- [ ] All five design decisions are recorded and implemented consistently.
-- [ ] Clean standalone `make verify` exits 0.
-- [ ] The resolver worker and node do not survive the last Agent drop.
-- [ ] Seeds and inbound ACLs are separate concepts in API, tests, and docs.
-- [ ] Forged or replayed topic ownership records are rejected.
-- [ ] Replicated and front-door modes converge according to documented rules.
-- [ ] Dead owner records are withdrawn or expire.
-- [ ] No production API derives a private key from a public name alone.
-- [ ] NameTable remapping leaves no stale inverse entries.
-- [ ] Every critical Agent path has a forced-QUIC integration test.
-- [ ] Heavy examples measure actual transferred payload bytes.
-- [ ] No workflow or Makefile target references nonexistent example `main`.
-- [ ] Cargo dependency sources are standalone and internally consistent.
-- [ ] README and rustdoc match actual behavior.
-- [ ] No version metadata was changed without explicit approval.
-- [ ] No commit contains a signature, trailer, body, or non-Conventional title.
+- [x] An operator-approved baseline SHA is recorded.
+- [x] All five design decisions are recorded and implemented consistently.
+- [x] Clean standalone `make verify` exits 0.
+- [x] The resolver worker and node do not survive the last Agent drop.
+- [x] Seeds and inbound ACLs are separate concepts in API, tests, and docs.
+- [x] Forged or replayed topic ownership records are rejected.
+- [x] Replicated and front-door modes converge according to documented rules.
+- [x] Dead owner records are withdrawn or expire.
+- [x] No production API derives a private key from a public name alone.
+- [x] NameTable remapping leaves no stale inverse entries.
+- [x] Every critical Agent path has a forced-QUIC integration test.
+- [x] Heavy examples measure actual transferred payload bytes.
+- [x] No workflow or Makefile target references nonexistent example `main`.
+- [x] Cargo dependency sources are standalone and internally consistent.
+- [x] README and rustdoc match actual behavior.
+- [x] No version metadata was changed without explicit approval.
+- [x] No commit contains a signature, trailer, body, or non-Conventional title.
 
 ## STOP conditions
 

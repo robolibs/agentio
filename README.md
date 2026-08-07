@@ -124,3 +124,9 @@ content; they are not repeatable statistical benchmarks.
 `agentio` is library-only. CI builds, tests, lints, and documents the library;
 it does not package a nonexistent application binary. Source releases remain a
 manual maintainer operation.
+
+The audit target explicitly reports but does not block on
+`RUSTSEC-2023-0071`, a medium-severity timing advisory in `rsa` with no fixed
+release. Agentio's directory protocol uses Ed25519, not RSA. Applications that
+use RSA through the re-exported authbox surface must assess that advisory for
+their own threat model.
