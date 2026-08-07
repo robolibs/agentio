@@ -21,6 +21,7 @@ fn resolves_and_transfers_over_forced_quic() {
         .skip_shm()
         .build()
         .unwrap();
+    let mut publisher = server.publish::<RemoteSample>("/remote/sample").unwrap();
     let client = Agent::builder()
         .identity(client_key)
         .bootstrap([server_id])
@@ -36,7 +37,7 @@ fn resolves_and_transfers_over_forced_quic() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
 
-    let mut publisher = server.publish::<RemoteSample>("/remote/sample").unwrap();
+    assert_eq!(client.reconcile_now().unwrap(), 1);
     let mut subscriber = client.subscribe::<RemoteSample>("/remote/sample").unwrap();
 
     let mut received = None;
@@ -49,4 +50,25 @@ fn resolves_and_transfers_over_forced_quic() {
     }
     let received = received.expect("remote sample timed out");
     assert_eq!(received.header().sequence, 42);
+
+    let mut direct = client
+        .by_id(server_id)
+        .unwrap()
+        .subscribe::<RemoteSample>("/remote/sample")
+        .unwrap();
+    let mut direct_received = None;
+    for _ in 0..20 {
+        publisher.send(&RemoteSample { sequence: 84 }).unwrap();
+        if let Some(sample) = direct.recv_timeout(Duration::from_millis(250)).unwrap() {
+            direct_received = Some(sample);
+            break;
+        }
+    }
+    assert_eq!(
+        direct_received
+            .expect("direct sample timed out")
+            .header()
+            .sequence,
+        84
+    );
 }

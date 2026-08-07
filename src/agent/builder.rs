@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use super::core::{Agent, AgentInner, ResolverWorker, run_resolution_loop};
+use super::core::{
+    Agent, AgentInner, ControlLoopConfig, ControlWorker, run_control_loop, run_resolution_loop,
+};
 use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
 use crate::directory::{ControlPlaneHealth, Directory, RESOLUTION_TOPIC};
 use crate::error::{Error, Result};
@@ -168,14 +170,41 @@ impl AgentBuilder {
 
         let server = node.req_server::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC)?;
         let health = Arc::new(ControlPlaneHealth::default());
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let hosted_records = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let next_revision = Arc::new(AtomicU64::new(1));
+        let (resolver_shutdown_tx, resolver_shutdown_rx) = std::sync::mpsc::channel();
         let worker_health = health.clone();
         let dir_clone = directory.clone();
-        let join_handle = std::thread::Builder::new()
+        let resolver_join = std::thread::Builder::new()
             .name(format!("agentio-resolver-{machine_name}"))
             .spawn(move || {
-                run_resolution_loop(server, dir_clone, worker_health, shutdown_rx);
+                run_resolution_loop(server, dir_clone, worker_health, resolver_shutdown_rx);
             })?;
+
+        let control_config = ControlLoopConfig {
+            node: node.clone(),
+            secret: secret.clone(),
+            endpoint_id,
+            mode: self.directory_mode.clone(),
+            seeds: self.bootstrap_peers.clone(),
+            directory: directory.clone(),
+            machine_name: machine_name.clone(),
+            hosted_records: hosted_records.clone(),
+            next_revision: next_revision.clone(),
+            health: health.clone(),
+        };
+        let (control_shutdown_tx, control_shutdown_rx) = std::sync::mpsc::channel();
+        let control_join = match std::thread::Builder::new()
+            .name(format!("agentio-control-{machine_name}"))
+            .spawn(move || run_control_loop(control_config, control_shutdown_rx))
+        {
+            Ok(join) => join,
+            Err(error) => {
+                let _ = resolver_shutdown_tx.send(());
+                let _ = resolver_join.join();
+                return Err(error.into());
+            }
+        };
 
         let inner = Arc::new(AgentInner {
             node,
@@ -191,11 +220,18 @@ impl AgentBuilder {
             no_relay: self.no_relay,
             skip_shm: self.skip_shm,
             health,
-            next_revision: AtomicU64::new(1),
-            resolver_worker: Mutex::new(Some(ResolverWorker {
-                shutdown_tx,
-                join_handle,
-            })),
+            next_revision,
+            hosted_records,
+            workers: Mutex::new(vec![
+                ControlWorker {
+                    shutdown_tx: resolver_shutdown_tx,
+                    join_handle: resolver_join,
+                },
+                ControlWorker {
+                    shutdown_tx: control_shutdown_tx,
+                    join_handle: control_join,
+                },
+            ]),
         });
 
         Ok(Agent { inner })

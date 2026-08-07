@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::directory::{
     ControlPlaneHealth, Directory, DirectoryHealth, ExchangeKind, MAX_DIRECTORY_BATCH,
     RESOLUTION_TOPIC, RESOLUTION_TYPE_HASH, ResolveRequest, ResolveResponse, TopicEntry,
-    TopicRecordSpec,
+    TopicRecordSpec, TopicWithdrawal, unix_time_ms,
 };
 use crate::error::{Error, Result};
 use crate::escape::ById;
@@ -18,6 +18,17 @@ use crate::naming::{NameTable, normalize_topic, qualify_participant_topic};
 
 use super::builder::AgentBuilder;
 use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
+use super::registered::Registered;
+
+type HostedKey = (String, ExchangeKind);
+
+#[derive(Debug, Clone)]
+pub(crate) struct HostedRecord {
+    pub(crate) topic: String,
+    pub(crate) exchange: ExchangeKind,
+    pub(crate) request_type_hash: u64,
+    pub(crate) response_type_hash: Option<u64>,
+}
 
 pub(crate) struct AgentInner {
     pub(crate) node: Node,
@@ -33,25 +44,28 @@ pub(crate) struct AgentInner {
     pub(crate) no_relay: bool,
     pub(crate) skip_shm: bool,
     pub(crate) health: Arc<ControlPlaneHealth>,
-    pub(crate) next_revision: AtomicU64,
-    pub(crate) resolver_worker: Mutex<Option<ResolverWorker>>,
+    pub(crate) next_revision: Arc<AtomicU64>,
+    pub(crate) hosted_records: Arc<Mutex<std::collections::HashMap<HostedKey, HostedRecord>>>,
+    pub(crate) workers: Mutex<Vec<ControlWorker>>,
 }
 
-pub(crate) struct ResolverWorker {
-    pub(crate) shutdown_tx: tokio::sync::oneshot::Sender<()>,
+pub(crate) struct ControlWorker {
+    pub(crate) shutdown_tx: std::sync::mpsc::Sender<()>,
     pub(crate) join_handle: std::thread::JoinHandle<()>,
 }
 
 impl Drop for AgentInner {
     fn drop(&mut self) {
-        let worker = match self.resolver_worker.get_mut() {
-            Ok(worker) => worker.take(),
-            Err(poisoned) => poisoned.into_inner().take(),
+        let workers = match self.workers.get_mut() {
+            Ok(workers) => std::mem::take(workers),
+            Err(poisoned) => std::mem::take(poisoned.into_inner()),
         };
-        if let Some(worker) = worker {
+        for worker in &workers {
             let _ = worker.shutdown_tx.send(());
+        }
+        for worker in workers {
             if worker.join_handle.join().is_err() {
-                tracing::error!("agentio resolver worker panicked during shutdown");
+                tracing::error!("agentio control worker panicked during shutdown");
             }
         }
     }
@@ -151,6 +165,32 @@ impl Agent {
         self.inner.health.snapshot()
     }
 
+    pub fn reconcile_now(&self) -> Result<usize> {
+        reconcile_directory(
+            &self.inner.node,
+            self.inner.endpoint_id,
+            &self.inner.directory_mode,
+            &self.inner.bootstrap_peers,
+            &self.inner.directory,
+            &self.inner.health,
+        )
+    }
+
+    pub fn renew_now(&self) -> usize {
+        renew_hosted_records(&ControlLoopConfig {
+            node: self.inner.node.clone(),
+            secret: self.inner.secret.clone(),
+            endpoint_id: self.inner.endpoint_id,
+            mode: self.inner.directory_mode.clone(),
+            seeds: self.inner.bootstrap_peers.clone(),
+            directory: self.inner.directory.clone(),
+            machine_name: self.inner.machine_name.clone(),
+            hosted_records: self.inner.hosted_records.clone(),
+            next_revision: self.inner.next_revision.clone(),
+            health: self.inner.health.clone(),
+        })
+    }
+
     /// Create an escape hatch handle to call peerbus directly on a specific peer ID without directory resolution.
     pub fn by_id(&self, peer: impl TryIntoBootstrapPeer) -> Result<ById<'_>> {
         let peer_id = peer.try_into_bootstrap_peer()?;
@@ -158,7 +198,7 @@ impl Agent {
     }
 
     /// Publish a topic by name. Registers the topic in the local directory and announces it to peer machines.
-    pub fn publish<T>(&self, topic: &str) -> Result<Publisher<T>>
+    pub fn publish<T>(&self, topic: &str) -> Result<Registered<Publisher<T>>>
     where
         T: datapod::DataPod + 'static,
         <T as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -176,9 +216,12 @@ impl Agent {
             ),
             &self.inner.secret,
         )?;
-        self.inner.directory.register(entry.clone())?;
-        self.announce_topic_to_peers(&entry);
-        Ok(publisher)
+        self.register_hosted(&entry)?;
+        Ok(Registered::new(
+            publisher,
+            entry,
+            Arc::downgrade(&self.inner),
+        ))
     }
 
     /// Subscribe to a topic by name, resolving its owner Machine ID within the Agent composition.
@@ -222,7 +265,7 @@ impl Agent {
     }
 
     /// Register and serve a req/res service topic.
-    pub fn req_server<Req, Res>(&self, topic: &str) -> Result<ReqServer<Req, Res>>
+    pub fn req_server<Req, Res>(&self, topic: &str) -> Result<Registered<ReqServer<Req, Res>>>
     where
         Req: datapod::DataPod + 'static,
         <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -242,9 +285,8 @@ impl Agent {
             ),
             &self.inner.secret,
         )?;
-        self.inner.directory.register(entry.clone())?;
-        self.announce_topic_to_peers(&entry);
-        Ok(server)
+        self.register_hosted(&entry)?;
+        Ok(Registered::new(server, entry, Arc::downgrade(&self.inner)))
     }
 
     /// Create a req/res client targeting a service topic, resolving its owner Machine ID via referral.
@@ -270,7 +312,7 @@ impl Agent {
     }
 
     /// Register and serve a que/ans service topic.
-    pub fn que_server<Que, Ans>(&self, topic: &str) -> Result<AnsServer<Que, Ans>>
+    pub fn que_server<Que, Ans>(&self, topic: &str) -> Result<Registered<AnsServer<Que, Ans>>>
     where
         Que: datapod::DataPod + 'static,
         <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -290,9 +332,8 @@ impl Agent {
             ),
             &self.inner.secret,
         )?;
-        self.inner.directory.register(entry.clone())?;
-        self.announce_topic_to_peers(&entry);
-        Ok(server)
+        self.register_hosted(&entry)?;
+        Ok(Registered::new(server, entry, Arc::downgrade(&self.inner)))
     }
 
     /// Create a que/ans client targeting a service topic, resolving its owner Machine ID via referral.
@@ -318,7 +359,7 @@ impl Agent {
     }
 
     /// Register and serve a put/ack service topic.
-    pub fn put_server<Put, Ack>(&self, topic: &str) -> Result<AckServer<Put, Ack>>
+    pub fn put_server<Put, Ack>(&self, topic: &str) -> Result<Registered<AckServer<Put, Ack>>>
     where
         Put: datapod::DataPod + 'static,
         <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -338,9 +379,8 @@ impl Agent {
             ),
             &self.inner.secret,
         )?;
-        self.inner.directory.register(entry.clone())?;
-        self.announce_topic_to_peers(&entry);
-        Ok(server)
+        self.register_hosted(&entry)?;
+        Ok(Registered::new(server, entry, Arc::downgrade(&self.inner)))
     }
 
     /// Create a put/ack client targeting a service topic, resolving its owner Machine ID via referral.
@@ -369,7 +409,7 @@ impl Agent {
     pub fn pip_server<ClientMsg, ServerMsg>(
         &self,
         topic: &str,
-    ) -> Result<PipServer<ClientMsg, ServerMsg>>
+    ) -> Result<Registered<PipServer<ClientMsg, ServerMsg>>>
     where
         ClientMsg: datapod::DataPod + 'static,
         <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -392,9 +432,8 @@ impl Agent {
             ),
             &self.inner.secret,
         )?;
-        self.inner.directory.register(entry.clone())?;
-        self.announce_topic_to_peers(&entry);
-        Ok(server)
+        self.register_hosted(&entry)?;
+        Ok(Registered::new(server, entry, Arc::downgrade(&self.inner)))
     }
 
     /// Create a streaming pip client targeting a service topic, resolving its owner Machine ID via referral.
@@ -488,54 +527,256 @@ impl Agent {
         self.inner.next_revision.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn announce_topic_to_peers(&self, entry: &TopicEntry) {
-        let req = ResolveRequest::Announce {
-            entries: vec![entry.clone()],
-        };
-        let Ok(req_bytes) = req.to_bytes() else {
-            self.inner.health.announcement_failed();
-            return;
-        };
-        let req_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, req_bytes);
+    fn register_hosted(&self, entry: &TopicEntry) -> Result<()> {
+        self.inner.directory.register(entry.clone())?;
+        self.inner.hosted_records.lock().unwrap().insert(
+            (entry.topic().to_string(), entry.exchange()),
+            HostedRecord {
+                topic: entry.topic().to_string(),
+                exchange: entry.exchange(),
+                request_type_hash: entry.request_type_hash(),
+                response_type_hash: entry.response_type_hash(),
+            },
+        );
+        announce_entry(&self.inner, entry);
+        Ok(())
+    }
+}
 
-        let targets = match &self.inner.directory_mode {
-            DirectoryMode::FrontDoor(id) => vec![*id],
-            DirectoryMode::Replicated => self.inner.bootstrap_peers.clone(),
-        };
+fn resolution_targets(mode: &DirectoryMode, seeds: &[EndpointId]) -> Vec<EndpointId> {
+    match mode {
+        DirectoryMode::FrontDoor(id) => vec![*id],
+        DirectoryMode::Replicated => seeds.to_vec(),
+    }
+}
 
-        for target_id in targets {
-            if target_id == self.inner.endpoint_id {
-                continue;
+fn send_control_request(
+    node: &Node,
+    target_id: EndpointId,
+    request: &ResolveRequest,
+) -> Result<ResolveResponse> {
+    let request_bytes = request.to_bytes()?;
+    let message = DatapodMsg::new(RESOLUTION_TYPE_HASH, request_bytes);
+    let mut client = node.req_client::<DatapodMsg, DatapodMsg>(target_id, RESOLUTION_TOPIC)?;
+    let sample = client.call(&message)?;
+    ResolveResponse::from_bytes(sample.payload())
+}
+
+fn announce_entry(inner: &AgentInner, entry: &TopicEntry) {
+    announce_records(
+        &inner.node,
+        inner.endpoint_id,
+        &inner.directory_mode,
+        &inner.bootstrap_peers,
+        &inner.health,
+        std::slice::from_ref(entry),
+    );
+}
+
+fn announce_records(
+    node: &Node,
+    endpoint_id: EndpointId,
+    mode: &DirectoryMode,
+    seeds: &[EndpointId],
+    health: &ControlPlaneHealth,
+    entries: &[TopicEntry],
+) {
+    let targets = resolution_targets(mode, seeds);
+    health.set_pending_announcements(targets.len().try_into().unwrap_or(u64::MAX));
+    let request = ResolveRequest::Announce {
+        entries: entries.to_vec(),
+    };
+    let mut pending = targets.len();
+    for target_id in targets {
+        if target_id == endpoint_id {
+            pending = pending.saturating_sub(1);
+            continue;
+        }
+        match send_control_request(node, target_id, &request) {
+            Ok(ResolveResponse::Announced { .. }) => health.announcement_succeeded(),
+            Ok(ResolveResponse::Rejected { message }) => {
+                health.announcement_failed();
+                tracing::warn!(%target_id, %message, "directory announcement rejected");
             }
-            if let Ok(mut client) = self
-                .inner
-                .node
-                .req_client::<DatapodMsg, DatapodMsg>(target_id, RESOLUTION_TOPIC)
-            {
-                match client.call(&req_msg) {
-                    Ok(_) => self.inner.health.announcement_succeeded(),
-                    Err(error) => {
-                        self.inner.health.announcement_failed();
-                        tracing::warn!(%target_id, %error, "directory announcement failed");
-                    }
-                }
-            } else {
-                self.inner.health.announcement_failed();
-            }
+            Ok(_) | Err(_) => health.announcement_failed(),
+        }
+        pending = pending.saturating_sub(1);
+        health.set_pending_announcements(pending.try_into().unwrap_or(u64::MAX));
+    }
+    health.set_pending_announcements(0);
+}
+
+pub(crate) fn withdraw_owned_entry(inner: &AgentInner, entry: &TopicEntry) {
+    inner
+        .hosted_records
+        .lock()
+        .unwrap()
+        .remove(&(entry.topic().to_string(), entry.exchange()));
+    let revision = inner.next_revision.fetch_add(1, Ordering::Relaxed);
+    let Ok(withdrawal) = TopicWithdrawal::signed(entry, revision, &inner.secret) else {
+        inner.health.announcement_failed();
+        return;
+    };
+    if inner.directory.withdraw(&withdrawal).is_err() {
+        inner.health.announcement_failed();
+    }
+    let request = ResolveRequest::Withdraw {
+        entries: vec![withdrawal],
+    };
+    for target_id in resolution_targets(&inner.directory_mode, &inner.bootstrap_peers) {
+        if target_id == inner.endpoint_id {
+            continue;
+        }
+        match send_control_request(&inner.node, target_id, &request) {
+            Ok(ResolveResponse::Withdrawn { .. }) => inner.health.announcement_succeeded(),
+            _ => inner.health.announcement_failed(),
         }
     }
+}
+
+pub(crate) fn reconcile_directory(
+    node: &Node,
+    endpoint_id: EndpointId,
+    mode: &DirectoryMode,
+    seeds: &[EndpointId],
+    directory: &Directory,
+    health: &ControlPlaneHealth,
+) -> Result<usize> {
+    let targets = resolution_targets(mode, seeds);
+    let mut learned = 0;
+    let mut healthy = 0;
+    for target_id in targets.iter().copied().filter(|id| *id != endpoint_id) {
+        let mut offset = 0;
+        let mut seed_healthy = false;
+        loop {
+            let request = ResolveRequest::List {
+                offset,
+                limit: MAX_DIRECTORY_BATCH,
+            };
+            let response = send_control_request(node, target_id, &request);
+            let Ok(ResolveResponse::ListResult {
+                entries,
+                next_offset,
+            }) = response
+            else {
+                break;
+            };
+            seed_healthy = true;
+            for entry in entries {
+                match directory.register(entry) {
+                    Ok(inserted) => learned += usize::from(inserted),
+                    Err(Error::OwnershipConflict { .. }) => health.conflict(),
+                    Err(_) => health.reject_record(),
+                }
+            }
+            let Some(next) = next_offset else {
+                break;
+            };
+            if next <= offset {
+                break;
+            }
+            offset = next;
+        }
+        healthy += usize::from(seed_healthy);
+    }
+    let attempted = targets.iter().filter(|id| **id != endpoint_id).count();
+    let stale = attempted.saturating_sub(healthy);
+    if healthy > 0 || attempted == 0 {
+        health.reconciled(unix_time_ms(), stale.try_into().unwrap_or(u64::MAX));
+        Ok(learned)
+    } else {
+        Err(Error::ResolutionFailed(
+            "directory reconciliation failed for every configured seed".to_string(),
+        ))
+    }
+}
+
+pub(crate) struct ControlLoopConfig {
+    pub(crate) node: Node,
+    pub(crate) secret: peerbus::SecretKey,
+    pub(crate) endpoint_id: EndpointId,
+    pub(crate) mode: DirectoryMode,
+    pub(crate) seeds: Vec<EndpointId>,
+    pub(crate) directory: Directory,
+    pub(crate) machine_name: String,
+    pub(crate) hosted_records: Arc<Mutex<std::collections::HashMap<HostedKey, HostedRecord>>>,
+    pub(crate) next_revision: Arc<AtomicU64>,
+    pub(crate) health: Arc<ControlPlaneHealth>,
+}
+
+pub(crate) fn run_control_loop(
+    config: ControlLoopConfig,
+    shutdown_rx: std::sync::mpsc::Receiver<()>,
+) {
+    const CONTROL_INTERVAL: Duration = Duration::from_secs(5);
+    loop {
+        let _ = reconcile_directory(
+            &config.node,
+            config.endpoint_id,
+            &config.mode,
+            &config.seeds,
+            &config.directory,
+            &config.health,
+        );
+        renew_hosted_records(&config);
+        match shutdown_rx.recv_timeout(CONTROL_INTERVAL) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+fn renew_hosted_records(config: &ControlLoopConfig) -> usize {
+    let hosted: Vec<_> = config
+        .hosted_records
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
+    let mut renewed = Vec::with_capacity(hosted.len());
+    for record in hosted {
+        let revision = config.next_revision.fetch_add(1, Ordering::Relaxed);
+        let spec = TopicRecordSpec::new(
+            record.topic,
+            record.exchange,
+            record.request_type_hash,
+            record.response_type_hash,
+            revision,
+            Some(&config.machine_name),
+        );
+        match TopicEntry::signed(spec, &config.secret) {
+            Ok(entry) => {
+                if config.directory.register(entry.clone()).is_ok() {
+                    renewed.push(entry);
+                }
+            }
+            Err(_) => config.health.announcement_failed(),
+        }
+    }
+    for batch in renewed.chunks(MAX_DIRECTORY_BATCH) {
+        announce_records(
+            &config.node,
+            config.endpoint_id,
+            &config.mode,
+            &config.seeds,
+            &config.health,
+            batch,
+        );
+    }
+    renewed.len()
 }
 
 pub(crate) fn run_resolution_loop(
     mut server: ReqServer<DatapodMsg, DatapodMsg>,
     directory: Directory,
     health: Arc<ControlPlaneHealth>,
-    mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    shutdown_rx: std::sync::mpsc::Receiver<()>,
 ) {
     loop {
         match shutdown_rx.try_recv() {
-            Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break,
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
         match server.recv_timeout(Duration::from_millis(50)) {
             Ok(Some((sample, reply))) => {

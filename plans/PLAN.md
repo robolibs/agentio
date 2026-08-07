@@ -343,7 +343,7 @@ After the operator establishes a baseline:
 | 3 | Fix resolver lifecycle and errors | P1 | M | 2 | IN PROGRESS |
 | 4 | Separate membership from ACLs | P1 | M | 2 | IN PROGRESS |
 | 5 | Authenticate directory records | P1 | L | 3, 4 | DONE |
-| 6 | Reconcile and expire directory state | P1 | L | 5 | TODO |
+| 6 | Reconcile and expire directory state | P1 | L | 5 | DONE |
 | 7 | Remove insecure derived identities | P1 | M | 2 | TODO |
 | 8 | Fix naming and participant contract | P2 | M | 6 | TODO |
 | 9 | Repair examples and benchmarks | P2 | M | 4, 6 | TODO |

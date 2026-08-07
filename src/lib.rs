@@ -10,7 +10,7 @@ pub mod escape;
 pub mod identity;
 pub mod naming;
 
-pub use agent::{Agent, AgentBuilder, DirectoryMode, TryIntoBootstrapPeer};
+pub use agent::{Agent, AgentBuilder, DirectoryMode, Registered, TryIntoBootstrapPeer};
 pub use authbox;
 pub use authbox::did;
 pub use directory::{

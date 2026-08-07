@@ -49,7 +49,15 @@ impl Directory {
     }
 
     pub fn lookup_exchange(&self, topic: &str, exchange: ExchangeKind) -> Option<TopicEntry> {
-        let now = unix_time_ms();
+        self.lookup_exchange_at(topic, exchange, unix_time_ms())
+    }
+
+    fn lookup_exchange_at(
+        &self,
+        topic: &str,
+        exchange: ExchangeKind,
+        now: u64,
+    ) -> Option<TopicEntry> {
         let key = (topic.to_string(), exchange);
         let mut map = self.entries.write().unwrap();
         map.retain(|_, entry| entry.lease_expires_at_ms() > now);
@@ -155,5 +163,41 @@ mod tests {
             directory.register(record),
             Err(Error::InvalidSignature { .. })
         ));
+    }
+
+    #[test]
+    fn older_revision_cannot_replace_newer_state() {
+        let directory = Directory::new();
+        let secret = SecretKey::generate();
+        directory.register(entry(&secret, 2)).unwrap();
+        assert!(matches!(
+            directory.register(entry(&secret, 1)),
+            Err(Error::StaleRevision { .. })
+        ));
+    }
+
+    #[test]
+    fn expired_records_are_not_resolved() {
+        let directory = Directory::new();
+        let secret = SecretKey::generate();
+        let deadline = crate::directory::unix_time_ms().saturating_add(100);
+        let record = TopicEntry::signed(
+            TopicRecordSpec::new(
+                "/short-lived",
+                ExchangeKind::PubSub,
+                1,
+                None,
+                1,
+                None::<String>,
+            )
+            .lease_expires_at_ms(deadline),
+            &secret,
+        )
+        .unwrap();
+        directory.register(record).unwrap();
+        assert_eq!(
+            directory.lookup_exchange_at("/short-lived", ExchangeKind::PubSub, deadline),
+            None
+        );
     }
 }
