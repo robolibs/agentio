@@ -95,7 +95,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Run the client from another terminal or computer using:");
     println!("    cargo run --example 07_client_all -- {}", did_key);
     if use_shm {
-        println!("    cargo run --example 07_client_all -- {} --use-shm", did_key);
+        println!(
+            "    cargo run --example 07_client_all -- {} --use-shm",
+            did_key
+        );
     }
     println!("============================================================\n");
 
@@ -115,79 +118,93 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Req/Res Server
     let mut req_srv = agent.req_server::<MathReq, MathRes>("/service/add")?;
-    thread::spawn(move || loop {
-        match req_srv.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some((sample, reply))) => {
-                let req = sample.header();
-                println!("  [Req/Res] Serving MathReq: {} + {}", req.x, req.y);
-                if let Err(e) = reply.respond(&MathRes { sum: req.x + req.y }) {
-                    eprintln!("  [Req/Res] Failed to send response: {}", e);
+    thread::spawn(move || {
+        loop {
+            match req_srv.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some((sample, reply))) => {
+                    let req = sample.header();
+                    println!("  [Req/Res] Serving MathReq: {} + {}", req.x, req.y);
+                    if let Err(e) = reply.respond(&MathRes { sum: req.x + req.y }) {
+                        eprintln!("  [Req/Res] Failed to send response: {}", e);
+                    }
                 }
+                Ok(None) => {}
+                Err(e) => eprintln!("  [Req/Res] Server error: {}", e),
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("  [Req/Res] Server error: {}", e),
         }
     });
 
     // 3. Que/Ans Server
     let mut que_srv = agent.que_server::<RangeQuery, RangeHit>("/query/range")?;
-    thread::spawn(move || loop {
-        match que_srv.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some((que_sample, mut ans_sender))) => {
-                let q = que_sample.header();
-                println!("  [Que/Ans] Serving RangeQuery: start={}, count={}", q.start, q.count);
-                for offset in 0..q.count {
-                    let _ = ans_sender.send(&RangeHit {
-                        value: q.start + offset as i32,
-                    });
+    thread::spawn(move || {
+        loop {
+            match que_srv.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some((que_sample, mut ans_sender))) => {
+                    let q = que_sample.header();
+                    println!(
+                        "  [Que/Ans] Serving RangeQuery: start={}, count={}",
+                        q.start, q.count
+                    );
+                    for offset in 0..q.count {
+                        let _ = ans_sender.send(&RangeHit {
+                            value: q.start + offset as i32,
+                        });
+                    }
+                    let _ = ans_sender.finish();
                 }
-                let _ = ans_sender.finish();
+                Ok(None) => {}
+                Err(e) => eprintln!("  [Que/Ans] Server error: {}", e),
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("  [Que/Ans] Server error: {}", e),
         }
     });
 
     // 4. Put/Ack Server
     let mut put_srv = agent.put_server::<DataBlock, UploadResult>("/upload/blocks")?;
-    thread::spawn(move || loop {
-        match put_srv.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(mut puts_recv)) => {
-                println!("  [Put/Ack] Receiving data blocks stream...");
-                let mut blocks = 0;
-                let mut total_bytes = 0;
-                while let Ok(Some(block)) = puts_recv.next() {
-                    blocks += 1;
-                    total_bytes += block.header().bytes_count;
+    thread::spawn(move || {
+        loop {
+            match put_srv.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some(mut puts_recv)) => {
+                    println!("  [Put/Ack] Receiving data blocks stream...");
+                    let mut blocks = 0;
+                    let mut total_bytes = 0;
+                    while let Ok(Some(block)) = puts_recv.next() {
+                        blocks += 1;
+                        total_bytes += block.header().bytes_count;
+                    }
+                    println!(
+                        "  [Put/Ack] Finished upload. Acking blocks={}, bytes={}",
+                        blocks, total_bytes
+                    );
+                    let _ = puts_recv.ack(&UploadResult {
+                        total_blocks: blocks,
+                        total_bytes,
+                    });
                 }
-                println!("  [Put/Ack] Finished upload. Acking blocks={}, bytes={}", blocks, total_bytes);
-                let _ = puts_recv.ack(&UploadResult {
-                    total_blocks: blocks,
-                    total_bytes,
-                });
+                Ok(None) => {}
+                Err(e) => eprintln!("  [Put/Ack] Server error: {}", e),
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("  [Put/Ack] Server error: {}", e),
         }
     });
 
     // 5. Pip Streaming Server
     let mut pip_srv = agent.pip_server::<AudioChunk, AudioFeedback>("/stream/audio")?;
-    thread::spawn(move || loop {
-        match pip_srv.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(mut pip_session)) => {
-                println!("  [Pip] Opening bidirectional streaming session...");
-                while let Ok(Some(chunk)) = pip_session.next() {
-                    let sample_id = chunk.header().sample_id;
-                    println!("  [Pip] Streamed chunk sample_id={}", sample_id);
-                    let _ = pip_session.send(&AudioFeedback {
-                        echo_id: sample_id * 100,
-                    });
+    thread::spawn(move || {
+        loop {
+            match pip_srv.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some(mut pip_session)) => {
+                    println!("  [Pip] Opening bidirectional streaming session...");
+                    while let Ok(Some(chunk)) = pip_session.next() {
+                        let sample_id = chunk.header().sample_id;
+                        println!("  [Pip] Streamed chunk sample_id={}", sample_id);
+                        let _ = pip_session.send(&AudioFeedback {
+                            echo_id: sample_id * 100,
+                        });
+                    }
+                    let _ = pip_session.finish_send();
                 }
-                let _ = pip_session.finish_send();
+                Ok(None) => {}
+                Err(e) => eprintln!("  [Pip] Server error: {}", e),
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("  [Pip] Server error: {}", e),
         }
     });
 

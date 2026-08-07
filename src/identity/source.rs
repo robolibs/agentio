@@ -1,11 +1,11 @@
+use peerbus::SecretKey;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use peerbus::SecretKey;
 
-use crate::error::{Error, Result};
 use super::endpoint_ext::endpoint_to_did_key;
+use crate::error::{Error, Result};
 
 /// Get the base directory for storing agent keys (`~/.local/share/agentio/keys`).
 pub fn default_keys_dir() -> PathBuf {
@@ -16,15 +16,20 @@ pub fn default_keys_dir() -> PathBuf {
         return PathBuf::from(data_home).join("agentio").join("keys");
     }
     if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".local").join("share").join("agentio").join("keys");
+        return PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("agentio")
+            .join("keys");
     }
     PathBuf::from(".agentio_keys")
 }
 
 /// Source specification for initializing an Agent's ed25519 identity key.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum IdentitySource {
     /// Default persistent ephemeral key stored at `~/.local/share/agentio/keys/ephemeral.key`.
+    #[default]
     Ephemeral,
     /// Pure random, non-persistent in-memory ed25519 key (useful for tests).
     Random,
@@ -38,12 +43,6 @@ pub enum IdentitySource {
     File(PathBuf),
     /// Explicit in-memory ed25519 `SecretKey`.
     Key(SecretKey),
-}
-
-impl Default for IdentitySource {
-    fn default() -> Self {
-        IdentitySource::Ephemeral
-    }
 }
 
 impl From<SecretKey> for IdentitySource {
@@ -74,7 +73,9 @@ pub fn derive_secret_from_name(name: &str) -> SecretKey {
 pub fn save_did_key(key: &SecretKey) -> Result<String> {
     let did = endpoint_to_did_key(&key.public())?;
     let safe_did = did.replace(':', "_");
-    let key_path = default_keys_dir().join("did").join(format!("{safe_did}.key"));
+    let key_path = default_keys_dir()
+        .join("did")
+        .join(format!("{safe_did}.key"));
     if let Some(parent) = key_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -133,10 +134,7 @@ pub fn load_or_generate_key(path: impl AsRef<Path>) -> Result<SecretKey> {
 
         #[cfg(not(unix))]
         {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)?;
+            let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
             file.write_all(&bytes)?;
         }
 
@@ -157,14 +155,18 @@ pub fn resolve_identity(source: &IdentitySource) -> Result<SecretKey> {
         IdentitySource::Random => Ok(SecretKey::generate()),
         IdentitySource::Name(name) => {
             let safe_name = name.replace('/', "_");
-            let key_path = default_keys_dir().join("name").join(format!("{safe_name}.key"));
+            let key_path = default_keys_dir()
+                .join("name")
+                .join(format!("{safe_name}.key"));
             let key = load_or_generate_key(key_path)?;
             let _ = save_did_key(&key);
             Ok(key)
         }
         IdentitySource::DidKey(did_str) => {
             let safe_did = did_str.replace(':', "_");
-            let key_path = default_keys_dir().join("did").join(format!("{safe_did}.key"));
+            let key_path = default_keys_dir()
+                .join("did")
+                .join(format!("{safe_did}.key"));
             if key_path.exists() {
                 let key = load_or_generate_key(&key_path)?;
                 let derived_did = endpoint_to_did_key(&key.public())?;

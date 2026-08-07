@@ -12,8 +12,8 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-peerbus = { path = "../peerbus" }
-authbox = { path = "../authbox" }
+peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "f4b31c6155a294a10f5902167afae6f0b78aa528" }
+authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.0" }
 datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
 blake3 = { version = "1", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
@@ -25,6 +25,5 @@ tracing = "0.1"
 [dev-dependencies]
 tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
 
 

@@ -62,14 +62,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().collect();
-    let target_id = args.iter().find(|a| !a.starts_with('-') && !a.ends_with("07_client_all"));
+    let target_id = args
+        .iter()
+        .find(|a| !a.starts_with('-') && !a.ends_with("07_client_all"));
 
     let server_address = match target_id {
         Some(id) => id.clone(),
         None => {
-            eprintln!("Usage: cargo run --example 07_client_all -- <SERVER_ENDPOINT_ID_OR_DID_KEY> [--use-shm]");
+            eprintln!(
+                "Usage: cargo run --example 07_client_all -- <SERVER_ENDPOINT_ID_OR_DID_KEY> [--use-shm]"
+            );
             eprintln!("Example:");
-            eprintln!("  cargo run --example 07_client_all -- did:key:z6MkoJAH27PmMN5S5YPMpi1MRPPtGFxYaR5DpU8NpK3NunT9");
+            eprintln!(
+                "  cargo run --example 07_client_all -- did:key:z6MkoJAH27PmMN5S5YPMpi1MRPPtGFxYaR5DpU8NpK3NunT9"
+            );
             std::process::exit(1);
         }
     };
@@ -113,7 +119,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match sub.recv_timeout(Duration::from_millis(100)) {
                     Ok(Some(sample)) => {
                         let t = sample.header();
-                        println!("  -> Received Telemetry sample #{}: seq={}, val={}", i, t.seq, t.val);
+                        println!(
+                            "  -> Received Telemetry sample #{}: seq={}, val={}",
+                            i, t.seq, t.val
+                        );
                         received_telemetry = true;
                         break;
                     }
@@ -139,13 +148,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match client_agent.req_client::<MathReq, MathRes>("/service/add") {
         Ok(mut req_cli) => match req_cli.call(&MathReq { x: 100, y: 250 }) {
             Ok(res) => {
-                println!("  -> Called MathReq(100, 250), received MathRes sum = {}", res.header().sum);
+                println!(
+                    "  -> Called MathReq(100, 250), received MathRes sum = {}",
+                    res.header().sum
+                );
                 assert_eq!(res.header().sum, 350);
                 println!("  [OK] Req/Res test passed.\n");
             }
             Err(e) => println!("  [FAIL] Req/Res RPC call failed: {}\n", e),
         },
-        Err(e) => println!("  [FAIL] Could not create req_client for /service/add: {}\n", e),
+        Err(e) => println!(
+            "  [FAIL] Could not create req_client for /service/add: {}\n",
+            e
+        ),
     }
 
     // ------------------------------------------------------------------------
@@ -153,19 +168,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------------
     println!("[Pattern 3/5] Testing Que / Ans (/query/range)...");
     match client_agent.que_client::<RangeQuery, RangeHit>("/query/range") {
-        Ok(mut que_cli) => match que_cli.send(&RangeQuery { start: 50, count: 4 }) {
+        Ok(mut que_cli) => match que_cli.send(&RangeQuery {
+            start: 50,
+            count: 4,
+        }) {
             Ok(mut answers) => {
                 let mut hits = Vec::new();
                 while let Ok(Some(hit)) = answers.next() {
                     hits.push(hit.header().value);
                 }
-                println!("  -> Queried RangeQuery(50, count=4), received hits: {:?}", hits);
+                println!(
+                    "  -> Queried RangeQuery(50, count=4), received hits: {:?}",
+                    hits
+                );
                 assert_eq!(hits, vec![50, 51, 52, 53]);
                 println!("  [OK] Que/Ans test passed.\n");
             }
             Err(e) => println!("  [FAIL] Que/Ans query send failed: {}\n", e),
         },
-        Err(e) => println!("  [FAIL] Could not create que_client for /query/range: {}\n", e),
+        Err(e) => println!(
+            "  [FAIL] Could not create que_client for /query/range: {}\n",
+            e
+        ),
     }
 
     // ------------------------------------------------------------------------
@@ -194,7 +218,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => println!("  [FAIL] Put/Ack open upload failed: {}\n", e),
         },
-        Err(e) => println!("  [FAIL] Could not create put_client for /upload/blocks: {}\n", e),
+        Err(e) => println!(
+            "  [FAIL] Could not create put_client for /upload/blocks: {}\n",
+            e
+        ),
     }
 
     // ------------------------------------------------------------------------
@@ -212,13 +239,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 while let Ok(Some(reply)) = pip.next() {
                     echoes.push(reply.header().echo_id);
                 }
-                println!("  -> Streamed AudioChunks [5, 6], received feedback echoes: {:?}", echoes);
+                println!(
+                    "  -> Streamed AudioChunks [5, 6], received feedback echoes: {:?}",
+                    echoes
+                );
                 assert_eq!(echoes, vec![500, 600]);
                 println!("  [OK] Pip streaming test passed.\n");
             }
             Err(e) => println!("  [FAIL] Pip stream open failed: {}\n", e),
         },
-        Err(e) => println!("  [FAIL] Could not create pip_client for /stream/audio: {}\n", e),
+        Err(e) => println!(
+            "  [FAIL] Could not create pip_client for /stream/audio: {}\n",
+            e
+        ),
     }
 
     println!("============================================================");

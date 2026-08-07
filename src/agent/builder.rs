@@ -1,13 +1,13 @@
+use peerbus::{DatapodMsg, EndpointId, Node};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use peerbus::{DatapodMsg, EndpointId, Node};
 
+use super::core::{Agent, AgentInner, run_resolution_loop};
+use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
 use crate::directory::{Directory, RESOLUTION_TOPIC};
 use crate::error::Result;
-use crate::identity::{resolve_identity, IdentitySource};
+use crate::identity::{IdentitySource, resolve_identity};
 use crate::naming::NameTable;
-use super::core::{run_resolution_loop, Agent, AgentInner};
-use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
 
 /// Builder for constructing an `Agent` instance.
 pub struct AgentBuilder {
@@ -69,10 +69,10 @@ impl AgentBuilder {
         P: TryIntoBootstrapPeer,
     {
         for p in peers {
-            if let Ok(peer) = p.try_into_bootstrap_peer() {
-                if !self.bootstrap_peers.contains(&peer) {
-                    self.bootstrap_peers.push(peer);
-                }
+            if let Ok(peer) = p.try_into_bootstrap_peer()
+                && !self.bootstrap_peers.contains(&peer)
+            {
+                self.bootstrap_peers.push(peer);
             }
         }
         self
@@ -150,5 +150,11 @@ impl AgentBuilder {
         });
 
         Ok(Agent { inner })
+    }
+}
+
+impl Default for AgentBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }

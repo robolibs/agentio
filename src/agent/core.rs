@@ -1,17 +1,17 @@
+use peerbus::{
+    AckServer, AnsServer, DatapodMsg, EndpointId, Node, PipClient, PipServer, Publisher, PutClient,
+    QueClient, ReqClient, ReqServer, Subscriber, wire_type_hash,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use peerbus::{
-    wire_type_hash, AckServer, AnsServer, DatapodMsg, EndpointId, Node, PipClient, PipServer,
-    Publisher, PutClient, QueClient, ReqClient, ReqServer, Subscriber,
-};
 
 use crate::directory::{
-    Directory, ResolveRequest, ResolveResponse, TopicEntry, RESOLUTION_TOPIC, RESOLUTION_TYPE_HASH,
+    Directory, RESOLUTION_TOPIC, RESOLUTION_TYPE_HASH, ResolveRequest, ResolveResponse, TopicEntry,
 };
 use crate::error::{Error, Result};
 use crate::escape::ById;
 use crate::identity::did_key;
-use crate::naming::{normalize_topic, qualify_participant_topic, NameTable};
+use crate::naming::{NameTable, normalize_topic, qualify_participant_topic};
 
 use super::builder::AgentBuilder;
 use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
@@ -70,7 +70,10 @@ impl Agent {
 
     /// Wait for iroh transport to discover local network addresses and endpoints.
     pub fn wait_for_direct_addresses(&self, timeout: Duration) -> Result<()> {
-        self.inner.node.wait_for_direct_addresses(timeout).map_err(Into::into)
+        self.inner
+            .node
+            .wait_for_direct_addresses(timeout)
+            .map_err(Into::into)
     }
 
     /// Access the local `Directory`.
@@ -117,7 +120,10 @@ impl Agent {
         let normalized = normalize_topic(topic)?;
         let entry = self.resolve_topic(&normalized)?;
         let peer_id = entry.endpoint_id();
-        self.inner.node.subscriber::<T>(peer_id, &normalized).map_err(Into::into)
+        self.inner
+            .node
+            .subscriber::<T>(peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Subscribe to a topic scoped to a specific participant name (e.g. `subscribe_in("perception", "scan")` -> `/perception/scan`).
@@ -129,7 +135,10 @@ impl Agent {
         let qualified = qualify_participant_topic(participant, topic)?;
         let entry = self.resolve_topic(&qualified)?;
         let peer_id = entry.endpoint_id();
-        self.inner.node.subscriber::<T>(peer_id, &qualified).map_err(Into::into)
+        self.inner
+            .node
+            .subscriber::<T>(peer_id, &qualified)
+            .map_err(Into::into)
     }
 
     /// Register and serve a req/res service topic.
@@ -164,7 +173,10 @@ impl Agent {
         let normalized = normalize_topic(topic)?;
         let entry = self.resolve_topic(&normalized)?;
         let peer_id = entry.endpoint_id();
-        self.inner.node.req_client::<Req, Res>(peer_id, &normalized).map_err(Into::into)
+        self.inner
+            .node
+            .req_client::<Req, Res>(peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Register and serve a que/ans service topic.
@@ -199,7 +211,10 @@ impl Agent {
         let normalized = normalize_topic(topic)?;
         let entry = self.resolve_topic(&normalized)?;
         let peer_id = entry.endpoint_id();
-        self.inner.node.que_client::<Que, Ans>(peer_id, &normalized).map_err(Into::into)
+        self.inner
+            .node
+            .que_client::<Que, Ans>(peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Register and serve a put/ack service topic.
@@ -234,11 +249,17 @@ impl Agent {
         let normalized = normalize_topic(topic)?;
         let entry = self.resolve_topic(&normalized)?;
         let peer_id = entry.endpoint_id();
-        self.inner.node.put_client::<Put, Ack>(peer_id, &normalized).map_err(Into::into)
+        self.inner
+            .node
+            .put_client::<Put, Ack>(peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Register and serve a streaming pip service topic.
-    pub fn pip_server<ClientMsg, ServerMsg>(&self, topic: &str) -> Result<PipServer<ClientMsg, ServerMsg>>
+    pub fn pip_server<ClientMsg, ServerMsg>(
+        &self,
+        topic: &str,
+    ) -> Result<PipServer<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
         <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -246,7 +267,10 @@ impl Agent {
         <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let server = self.inner.node.pip_server::<ClientMsg, ServerMsg>(&normalized)?;
+        let server = self
+            .inner
+            .node
+            .pip_server::<ClientMsg, ServerMsg>(&normalized)?;
         let entry = TopicEntry::new(
             &normalized,
             wire_type_hash::<ClientMsg>(),
@@ -259,7 +283,10 @@ impl Agent {
     }
 
     /// Create a streaming pip client targeting a service topic, resolving its owner Machine ID via referral.
-    pub fn pip_client<ClientMsg, ServerMsg>(&self, topic: &str) -> Result<PipClient<ClientMsg, ServerMsg>>
+    pub fn pip_client<ClientMsg, ServerMsg>(
+        &self,
+        topic: &str,
+    ) -> Result<PipClient<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
         <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -269,7 +296,10 @@ impl Agent {
         let normalized = normalize_topic(topic)?;
         let entry = self.resolve_topic(&normalized)?;
         let peer_id = entry.endpoint_id();
-        self.inner.node.pip_client::<ClientMsg, ServerMsg>(peer_id, &normalized).map_err(Into::into)
+        self.inner
+            .node
+            .pip_client::<ClientMsg, ServerMsg>(peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Resolve a topic to its `TopicEntry` by looking up the local directory or performing referral resolution.
@@ -287,22 +317,24 @@ impl Agent {
 
         for _attempt in 0..10 {
             for target_id in &targets {
-                if let Ok(mut client) = self.inner.node.req_client::<DatapodMsg, DatapodMsg>(
-                    *target_id,
-                    RESOLUTION_TOPIC,
-                ) {
+                if let Ok(mut client) = self
+                    .inner
+                    .node
+                    .req_client::<DatapodMsg, DatapodMsg>(*target_id, RESOLUTION_TOPIC)
+                {
                     let req = ResolveRequest::Query {
                         topic: normalized.clone(),
                     };
                     if let Ok(req_bytes) = req.to_bytes() {
                         let req_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, req_bytes);
-                        if let Ok(sample) = client.call(&req_msg) {
-                            if let Ok(resp) = ResolveResponse::from_bytes(sample.payload()) {
-                                if let ResolveResponse::QueryResult { found: true, entry: Some(entry) } = resp {
-                                    self.inner.directory.register(entry.clone());
-                                    return Ok(entry);
-                                }
-                            }
+                        if let Ok(sample) = client.call(&req_msg)
+                            && let Ok(ResolveResponse::QueryResult {
+                                found: true,
+                                entry: Some(entry),
+                            }) = ResolveResponse::from_bytes(sample.payload())
+                        {
+                            self.inner.directory.register(entry.clone());
+                            return Ok(entry);
                         }
                     }
                 }
@@ -319,7 +351,9 @@ impl Agent {
         let req = ResolveRequest::Announce {
             entries: vec![entry.clone()],
         };
-        let Ok(req_bytes) = req.to_bytes() else { return };
+        let Ok(req_bytes) = req.to_bytes() else {
+            return;
+        };
         let req_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, req_bytes);
 
         let targets = match &self.inner.directory_mode {
@@ -331,10 +365,11 @@ impl Agent {
             if target_id == self.inner.endpoint_id {
                 continue;
             }
-            if let Ok(mut client) = self.inner.node.req_client::<DatapodMsg, DatapodMsg>(
-                target_id,
-                RESOLUTION_TOPIC,
-            ) {
+            if let Ok(mut client) = self
+                .inner
+                .node
+                .req_client::<DatapodMsg, DatapodMsg>(target_id, RESOLUTION_TOPIC)
+            {
                 let _ = client.call(&req_msg);
             }
         }

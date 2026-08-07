@@ -1,4 +1,4 @@
-use agentio::{DirectoryMode, Agent};
+use agentio::{Agent, DirectoryMode};
 use datapod::datapod;
 use std::thread;
 use std::time::Duration;
@@ -26,8 +26,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .bootstrap([arm_agent.endpoint_id()])
         .build()?;
 
-    println!("Machine 1 (arm):  {} ({})", arm_agent.name(), arm_agent.endpoint_id());
-    println!("Machine 2 (head): {} ({})", head_agent.name(), head_agent.endpoint_id());
+    println!(
+        "Machine 1 (arm):  {} ({})",
+        arm_agent.name(),
+        arm_agent.endpoint_id()
+    );
+    println!(
+        "Machine 2 (head): {} ({})",
+        head_agent.name(),
+        head_agent.endpoint_id()
+    );
 
     // "agent-arm" publishes "/arm/joints"
     let mut arm_pub = arm_agent.publish::<JointState>("/arm/joints")?;
@@ -42,16 +50,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_sent = JointState {
         j1: 0.5,
         j2: -1.2,
-        j3: 3.14,
+        j3: std::f32::consts::PI,
     };
     arm_pub.send(&state_sent)?;
-    println!("Arm published joint state: j1={}, j2={}, j3={}", state_sent.j1, state_sent.j2, state_sent.j3);
+    println!(
+        "Arm published joint state: j1={}, j2={}, j3={}",
+        state_sent.j1, state_sent.j2, state_sent.j3
+    );
 
     thread::sleep(Duration::from_millis(100));
 
     if let Some(sample) = head_sub.take()? {
         let rec = sample.header();
-        println!("Head resolved and received joint state: j1={}, j2={}, j3={}", rec.j1, rec.j2, rec.j3);
+        println!(
+            "Head resolved and received joint state: j1={}, j2={}, j3={}",
+            rec.j1, rec.j2, rec.j3
+        );
     } else {
         println!("Head did not receive sample.");
     }

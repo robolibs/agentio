@@ -52,8 +52,14 @@ mod tests {
     #[test]
     fn test_topic_normalization() {
         assert_eq!(normalize_topic("pose").unwrap(), "/pose");
-        assert_eq!(normalize_topic("/perception/pose").unwrap(), "/perception/pose");
-        assert_eq!(normalize_topic("//perception///pose/").unwrap(), "/perception/pose");
+        assert_eq!(
+            normalize_topic("/perception/pose").unwrap(),
+            "/perception/pose"
+        );
+        assert_eq!(
+            normalize_topic("//perception///pose/").unwrap(),
+            "/perception/pose"
+        );
         assert!(normalize_topic("  ").is_err());
     }
 

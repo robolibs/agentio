@@ -63,14 +63,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().collect();
-    let target_id = args.iter().find(|a| !a.starts_with('-') && !a.ends_with("09_heavy_client"));
+    let target_id = args
+        .iter()
+        .find(|a| !a.starts_with('-') && !a.ends_with("09_heavy_client"));
 
     let server_address = match target_id {
         Some(id) => id.clone(),
         None => {
-            eprintln!("Usage: cargo run --example 09_heavy_client -- <SERVER_ENDPOINT_ID_OR_DID_KEY> [--use-shm]");
+            eprintln!(
+                "Usage: cargo run --example 09_heavy_client -- <SERVER_ENDPOINT_ID_OR_DID_KEY> [--use-shm]"
+            );
             eprintln!("Example:");
-            eprintln!("  cargo run --example 09_heavy_client -- did:key:z6MkoJAH27PmMN5S5YPMpi1MRPPtGFxYaR5DpU8NpK3NunT9");
+            eprintln!(
+                "  cargo run --example 09_heavy_client -- did:key:z6MkoJAH27PmMN5S5YPMpi1MRPPtGFxYaR5DpU8NpK3NunT9"
+            );
             std::process::exit(1);
         }
     };
@@ -133,7 +139,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start_time.elapsed();
     let mb_received = total_bytes as f64 / 1_000_000.0;
     let speed_mbps = mb_received / elapsed.as_secs_f64();
-    println!("  [OK] Pub/Sub: Received 5 frames ({:.2} MB) in {:.2}s ({:.2} MB/s)\n", mb_received, elapsed.as_secs_f64(), speed_mbps);
+    println!(
+        "  [OK] Pub/Sub: Received 5 frames ({:.2} MB) in {:.2}s ({:.2} MB/s)\n",
+        mb_received,
+        elapsed.as_secs_f64(),
+        speed_mbps
+    );
 
     // ------------------------------------------------------------------------
     // Pattern 2: Req / Res (10 MB Large RPC Payload)
@@ -142,7 +153,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rpc_cli = client_agent.req_client::<HeavyRpcReq, HeavyRpcRes>("/heavy/rpc_download")?;
     let req_size = 10_000_000u64; // 10 MB
     let start_time = Instant::now();
-    let res = rpc_cli.call(&HeavyRpcReq { requested_bytes: req_size })?;
+    let res = rpc_cli.call(&HeavyRpcReq {
+        requested_bytes: req_size,
+    })?;
     let elapsed = start_time.elapsed();
     let h = res.header();
     let mb_received = h.payload_bytes as f64 / 1_000_000.0;
@@ -174,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let h = hit.header();
         total_chunks += 1;
         total_bytes += h.payload_bytes;
-        if total_chunks % 5 == 0 {
+        if total_chunks.is_multiple_of(5) {
             println!(
                 "  -> Progress: Received {} / 20 chunks ({:.2} MB)",
                 total_chunks,
@@ -198,7 +211,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pattern 4: Put / Ack (30 Upload Blocks x 1 MB = 30 MB Upload)
     // ------------------------------------------------------------------------
     println!("[Pattern 4/5] Testing Heavy Put / Ack Upload (/heavy/upload_blocks)...");
-    let mut put_cli = client_agent.put_client::<HeavyUploadBlock, HeavyUploadAck>("/heavy/upload_blocks")?;
+    let mut put_cli =
+        client_agent.put_client::<HeavyUploadBlock, HeavyUploadAck>("/heavy/upload_blocks")?;
     let start_time = Instant::now();
     let mut upload = put_cli.open()?;
 
@@ -225,8 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let speed_mbps = mb_uploaded / elapsed.as_secs_f64();
     println!(
         "  -> Ack Received: Total Blocks = {}, Total Bytes = {:.2} MB",
-        ack_h.total_blocks,
-        mb_uploaded
+        ack_h.total_blocks, mb_uploaded
     );
     println!(
         "  [OK] Put/Ack Upload: Uploaded {:.2} MB in {:.2}s ({:.2} MB/s)\n",
@@ -240,7 +253,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pattern 5: Pip Streaming (Bi-directional Heavy Stream 15 MB)
     // ------------------------------------------------------------------------
     println!("[Pattern 5/5] Testing Heavy Pip Streaming (/heavy/bidi_stream)...");
-    let mut pip_cli = client_agent.pip_client::<HeavyPipFrame, HeavyPipAck>("/heavy/bidi_stream")?;
+    let mut pip_cli =
+        client_agent.pip_client::<HeavyPipFrame, HeavyPipAck>("/heavy/bidi_stream")?;
     let start_time = Instant::now();
     let mut pip = pip_cli.open()?;
 
@@ -258,8 +272,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Ok(Some(reply)) = pip.next() {
         ack_count += 1;
         let h = reply.header();
-        if ack_count % 5 == 0 {
-            println!("  -> Received Pipe Ack #{}: frame_seq={}", ack_count, h.ack_seq);
+        if ack_count.is_multiple_of(5) {
+            println!(
+                "  -> Received Pipe Ack #{}: frame_seq={}",
+                ack_count, h.ack_seq
+            );
         }
     }
     let elapsed = start_time.elapsed();
@@ -276,7 +293,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let total_elapsed = overall_start.elapsed();
     println!("============================================================");
-    println!("  HEAVY BENCHMARK COMPLETED SUCCESSFULLY IN {:.2} SECONDS!  ", total_elapsed.as_secs_f64());
+    println!(
+        "  HEAVY BENCHMARK COMPLETED SUCCESSFULLY IN {:.2} SECONDS!  ",
+        total_elapsed.as_secs_f64()
+    );
     println!("============================================================");
 
     Ok(())

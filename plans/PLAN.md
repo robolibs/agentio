@@ -338,7 +338,7 @@ After the operator establishes a baseline:
 | Phase | Title | Priority | Effort | Depends on | Status |
 |---|---|---:|---:|---|---|
 | 0 | Establish baseline and decisions | P1 | S | none | DONE |
-| 1 | Restore clean build and automation | P1 | M | 0 | TODO |
+| 1 | Restore clean build and automation | P1 | M | 0 | DONE |
 | 2 | Add characterization test harness | P1 | M | 1 | TODO |
 | 3 | Fix resolver lifecycle and errors | P1 | M | 2 | TODO |
 | 4 | Separate membership from ACLs | P1 | M | 2 | TODO |

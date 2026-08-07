@@ -12,9 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     // 1. Create a single-machine Agent instance with an ephemeral key
-    let agent = Agent::builder()
-        .name("agent-single")
-        .build()?;
+    let agent = Agent::builder().name("agent-single").build()?;
 
     println!("Agent initialized!");
     println!("  Machine name: {}", agent.name());
@@ -34,13 +32,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         yaw: 0.78,
     };
     publisher.send(&pose_sent)?;
-    println!("Sent pose: x={}, y={}, yaw={}", pose_sent.x, pose_sent.y, pose_sent.yaw);
+    println!(
+        "Sent pose: x={}, y={}, yaw={}",
+        pose_sent.x, pose_sent.y, pose_sent.yaw
+    );
 
     // 5. Receive payload
     std::thread::sleep(std::time::Duration::from_millis(50));
     if let Some(sample) = subscriber.take()? {
         let pose_received = sample.header();
-        println!("Received pose: x={}, y={}, yaw={}", pose_received.x, pose_received.y, pose_received.yaw);
+        println!(
+            "Received pose: x={}, y={}, yaw={}",
+            pose_received.x, pose_received.y, pose_received.yaw
+        );
         assert_eq!(pose_received.x, pose_sent.x);
     } else {
         println!("No sample received.");

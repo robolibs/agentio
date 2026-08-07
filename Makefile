@@ -8,7 +8,7 @@ endif
 
 TOP_DIR := $(CURDIR)
 CARGO := cargo
-EXAMPLE ?= main
+EXAMPLE ?= 01_single_machine
 PREFIX ?= $(HOME)/.local
 
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
@@ -17,7 +17,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t check check-all test-all clippy rustdoc fmt fmt-check clean verify release help h
+.PHONY: build b compile c run r test t check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
 
 build:
 	@$(CARGO) build --lib
@@ -47,10 +47,13 @@ check-all:
 	@$(CARGO) check --all-targets --all-features
 
 fmt:
-	@$(CARGO) fmt --all
+	@$(CARGO) fmt --package $(PROJECT_NAME)
 
 fmt-check:
-	@$(CARGO) fmt --all -- --check
+	@$(CARGO) fmt --package $(PROJECT_NAME) -- --check
+
+lock:
+	@$(CARGO) generate-lockfile
 
 clippy:
 	@$(CARGO) clippy --all-targets --all-features -- -D warnings
@@ -93,10 +96,10 @@ help:
 	@echo "  rustdoc      Build docs with warnings denied"
 	@echo "  fmt          Format the workspace"
 	@echo "  fmt-check    Check formatting"
+	@echo "  lock         Regenerate Cargo.lock"
 	@echo "  clean        Remove Cargo build artifacts"
 	@echo "  verify       Run the full local gate"
 	@echo "  release      Release a new version"
 	@echo
 
 h: help
-

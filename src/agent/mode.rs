@@ -1,6 +1,6 @@
-use peerbus::EndpointId;
 use crate::error::Result;
 use crate::identity::did_key;
+use peerbus::EndpointId;
 
 /// Directory mode for topic resolution within a Robot composition.
 #[derive(Debug, Clone)]

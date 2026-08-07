@@ -1,6 +1,6 @@
-use peerbus::EndpointId;
 use crate::error::Result;
 use crate::identity::did_key;
+use peerbus::EndpointId;
 
 /// Representation of a Machine: one peerbus node instance bound to one `EndpointId`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

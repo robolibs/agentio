@@ -33,7 +33,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::sleep(Duration::from_millis(100));
 
     if let Some(sample) = sub2.take()? {
-        println!("Node 2 received ping via by_id escape hatch: seq={}", sample.header().seq);
+        println!(
+            "Node 2 received ping via by_id escape hatch: seq={}",
+            sample.header().seq
+        );
     } else {
         println!("No sample received.");
     }

@@ -1,6 +1,6 @@
+use peerbus::EndpointId;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use peerbus::EndpointId;
 
 /// Thread-safe registry mapping friendly names to `EndpointId`s and vice versa.
 #[derive(Debug, Clone, Default)]

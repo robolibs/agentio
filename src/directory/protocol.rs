@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use crate::error::{Error, Result};
 use super::entry::TopicEntry;
+use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 
 /// Reserved topic name used across an Agent for referral resolution.
 pub const RESOLUTION_TOPIC: &str = "__agentio_resolve";
@@ -22,7 +22,10 @@ pub enum ResolveRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResolveResponse {
     /// Result for `Query`.
-    QueryResult { found: bool, entry: Option<TopicEntry> },
+    QueryResult {
+        found: bool,
+        entry: Option<TopicEntry>,
+    },
     /// Result for `List`.
     ListResult { entries: Vec<TopicEntry> },
     /// Result for `Announce`.

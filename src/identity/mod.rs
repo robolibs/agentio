@@ -1,8 +1,8 @@
 pub use authbox::did;
 pub mod source;
 
-use peerbus::EndpointId;
 use crate::error::{Error, Result};
+use peerbus::EndpointId;
 
 /// Extension helpers for converting between peerbus `EndpointId` and `authbox::did`.
 pub mod endpoint_ext {
@@ -11,8 +11,7 @@ pub mod endpoint_ext {
     /// Convert a peerbus `EndpointId` to its canonical `did:key` string representation using `authbox`.
     pub fn endpoint_to_did_key(endpoint_id: &EndpointId) -> Result<String> {
         let pubkey_bytes = *endpoint_id.as_bytes();
-        authbox::did::encode_ed25519_did_key(pubkey_bytes)
-            .map_err(|e| Error::DidKey(e.to_string()))
+        authbox::did::encode_ed25519_did_key(pubkey_bytes).map_err(|e| Error::DidKey(e.to_string()))
     }
 
     /// Parse a `did:key` or hex string into a peerbus `EndpointId` using `authbox`.
@@ -21,28 +20,29 @@ pub mod endpoint_ext {
         if let Ok(id) = s.parse::<EndpointId>() {
             return Ok(id);
         }
-        let parsed = authbox::did::parse_did_key(s)
-            .map_err(|e| Error::DidKey(e.to_string()))?;
+        let parsed = authbox::did::parse_did_key(s).map_err(|e| Error::DidKey(e.to_string()))?;
         let pubkey_bytes: [u8; 32] = parsed
             .public_key
             .as_slice()
             .try_into()
             .map_err(|_| Error::DidKey("invalid public key length".to_string()))?;
-        let endpoint_id = EndpointId::from_bytes(&pubkey_bytes)
-            .map_err(|e| Error::DidKey(e.to_string()))?;
+        let endpoint_id =
+            EndpointId::from_bytes(&pubkey_bytes).map_err(|e| Error::DidKey(e.to_string()))?;
         Ok(endpoint_id)
     }
 
     /// Resolve the full W3C DID Document JSON for an `EndpointId` using `authbox`.
     pub fn endpoint_to_did_document_json(endpoint_id: &EndpointId) -> Result<String> {
         let did = endpoint_to_did_key(endpoint_id)?;
-        authbox::did::resolve_did_key_document_json(&did)
-            .map_err(|e| Error::DidKey(e.to_string()))
+        authbox::did::resolve_did_key_document_json(&did).map_err(|e| Error::DidKey(e.to_string()))
     }
 }
 
 pub use endpoint_ext as did_key;
-pub use source::{default_keys_dir, derive_secret_from_name, load_or_generate_key, resolve_identity, save_did_key, IdentitySource};
+pub use source::{
+    IdentitySource, default_keys_dir, derive_secret_from_name, load_or_generate_key,
+    resolve_identity, save_did_key,
+};
 
 #[cfg(test)]
 mod tests {

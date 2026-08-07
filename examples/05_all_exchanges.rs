@@ -83,8 +83,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = client_agent.wait_for_direct_addresses(Duration::from_secs(1));
     thread::sleep(Duration::from_millis(200));
 
-    println!("Server Agent: {} ({})", server_agent.name(), server_agent.endpoint_id());
-    println!("Client Agent: {} ({})\n", client_agent.name(), client_agent.endpoint_id());
+    println!(
+        "Server Agent: {} ({})",
+        server_agent.name(),
+        server_agent.endpoint_id()
+    );
+    println!(
+        "Client Agent: {} ({})\n",
+        client_agent.name(),
+        client_agent.endpoint_id()
+    );
 
     // ------------------------------------------------------------------------
     // Pattern 1: Pub / Sub
@@ -94,7 +102,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::sleep(Duration::from_millis(50));
     let mut sub = client_agent.subscribe::<Telemetry>("/telemetry")?;
 
-    pubr.send(&Telemetry { seq: 101, val: 98.6 })?;
+    pubr.send(&Telemetry {
+        seq: 101,
+        val: 98.6,
+    })?;
     thread::sleep(Duration::from_millis(50));
     if let Some(sample) = sub.take()? {
         let t = sample.header();
@@ -113,7 +124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let srv_handle_req = thread::spawn(move || -> Result<(), String> {
         for _ in 0..10 {
-            if let Some((sample, reply)) = req_srv.recv_timeout(Duration::from_millis(100)).map_err(|e| e.to_string())? {
+            if let Some((sample, reply)) = req_srv
+                .recv_timeout(Duration::from_millis(100))
+                .map_err(|e| e.to_string())?
+            {
                 let req = sample.header();
                 let res = MathRes { sum: req.x + req.y };
                 reply.respond(&res).map_err(|e| e.to_string())?;
@@ -124,7 +138,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let res_sample = req_cli.call(&MathReq { x: 15, y: 27 })?;
-    println!("  -> Client called 15 + 27, received sum = {}", res_sample.header().sum);
+    println!(
+        "  -> Client called 15 + 27, received sum = {}",
+        res_sample.header().sum
+    );
     assert_eq!(res_sample.header().sum, 42);
     srv_handle_req.join().unwrap().unwrap();
     println!("  [OK] Req/Res test passed.\n");
@@ -142,7 +159,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some((que_sample, mut ans_sender)) = que_srv.take().map_err(|e| e.to_string())? {
                 let q = que_sample.header();
                 for offset in 0..q.count {
-                    ans_sender.send(&RangeHit { value: q.start + offset as i32 }).map_err(|e| e.to_string())?;
+                    ans_sender
+                        .send(&RangeHit {
+                            value: q.start + offset as i32,
+                        })
+                        .map_err(|e| e.to_string())?;
                 }
                 ans_sender.finish().map_err(|e| e.to_string())?;
                 return Ok(());
@@ -152,12 +173,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err("Que/Ans server timed out".to_string())
     });
 
-    let mut answers_handle = que_cli.send(&RangeQuery { start: 10, count: 3 })?;
+    let mut answers_handle = que_cli.send(&RangeQuery {
+        start: 10,
+        count: 3,
+    })?;
     let mut hits = Vec::new();
     while let Some(hit_sample) = answers_handle.next()? {
         hits.push(hit_sample.header().value);
     }
-    println!("  -> Client queried range(10, count=3), received hits: {:?}", hits);
+    println!(
+        "  -> Client queried range(10, count=3), received hits: {:?}",
+        hits
+    );
     assert_eq!(hits, vec![10, 11, 12]);
     srv_handle_que.join().unwrap().unwrap();
     println!("  [OK] Que/Ans test passed.\n");
@@ -179,7 +206,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     blocks += 1;
                     total_bytes += block.header().bytes_count;
                 }
-                puts_recv.ack(&UploadResult { total_blocks: blocks, total_bytes }).map_err(|e| e.to_string())?;
+                puts_recv
+                    .ack(&UploadResult {
+                        total_blocks: blocks,
+                        total_bytes,
+                    })
+                    .map_err(|e| e.to_string())?;
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(20));
@@ -213,7 +245,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..10 {
             if let Some(mut pip_session) = pip_srv.take().map_err(|e| e.to_string())? {
                 while let Some(chunk) = pip_session.next().map_err(|e| e.to_string())? {
-                    let feedback = AudioFeedback { echo_id: chunk.header().sample_id * 100 };
+                    let feedback = AudioFeedback {
+                        echo_id: chunk.header().sample_id * 100,
+                    };
                     pip_session.send(&feedback).map_err(|e| e.to_string())?;
                 }
                 pip_session.finish_send().map_err(|e| e.to_string())?;
@@ -233,7 +267,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(reply_sample) = pip_stream.next()? {
         feedback_echoes.push(reply_sample.header().echo_id);
     }
-    println!("  -> Client streamed chunks [1, 2], received feedback echoes: {:?}", feedback_echoes);
+    println!(
+        "  -> Client streamed chunks [1, 2], received feedback echoes: {:?}",
+        feedback_echoes
+    );
     assert_eq!(feedback_echoes, vec![100, 200]);
     srv_handle_pip.join().unwrap().unwrap();
     println!("  [OK] Pip streaming test passed.\n");

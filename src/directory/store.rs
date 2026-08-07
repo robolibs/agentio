@@ -1,6 +1,6 @@
+use super::entry::TopicEntry;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use super::entry::TopicEntry;
 
 /// In-memory directory of topic definitions known to this Machine.
 #[derive(Debug, Clone, Default)]

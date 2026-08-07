@@ -1,5 +1,5 @@
-use std::fmt;
 use peerbus::{EndpointId, Node, PipClient, PutClient, QueClient, ReqClient, Subscriber};
+use std::fmt;
 
 use crate::error::Result;
 use crate::naming::normalize_topic;
@@ -37,7 +37,9 @@ impl<'a> ById<'a> {
         <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        self.node.subscriber::<T>(self.peer_id, &normalized).map_err(Into::into)
+        self.node
+            .subscriber::<T>(self.peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Open a req/res client targeting `topic` hosted by the target `EndpointId` directly.
@@ -49,7 +51,9 @@ impl<'a> ById<'a> {
         <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        self.node.req_client::<Req, Res>(self.peer_id, &normalized).map_err(Into::into)
+        self.node
+            .req_client::<Req, Res>(self.peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Open a queue client targeting `topic` on the target `EndpointId` directly.
@@ -61,7 +65,9 @@ impl<'a> ById<'a> {
         <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        self.node.que_client::<Que, Ans>(self.peer_id, &normalized).map_err(Into::into)
+        self.node
+            .que_client::<Que, Ans>(self.peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Open a put/ack client targeting `topic` on the target `EndpointId` directly.
@@ -73,11 +79,16 @@ impl<'a> ById<'a> {
         <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        self.node.put_client::<Put, Ack>(self.peer_id, &normalized).map_err(Into::into)
+        self.node
+            .put_client::<Put, Ack>(self.peer_id, &normalized)
+            .map_err(Into::into)
     }
 
     /// Open a pip client targeting `topic` on the target `EndpointId` directly.
-    pub fn pip_client<ClientMsg, ServerMsg>(&self, topic: &str) -> Result<PipClient<ClientMsg, ServerMsg>>
+    pub fn pip_client<ClientMsg, ServerMsg>(
+        &self,
+        topic: &str,
+    ) -> Result<PipClient<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
         <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -85,6 +96,8 @@ impl<'a> ById<'a> {
         <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        self.node.pip_client::<ClientMsg, ServerMsg>(self.peer_id, &normalized).map_err(Into::into)
+        self.node
+            .pip_client::<ClientMsg, ServerMsg>(self.peer_id, &normalized)
+            .map_err(Into::into)
     }
 }
