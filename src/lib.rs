@@ -20,8 +20,7 @@ pub use directory::{
 pub use error::{Error, Result};
 pub use escape::ById;
 pub use identity::{
-    IdentitySource, default_keys_dir, derive_secret_from_name, did_key, load_or_generate_key,
-    resolve_identity, save_did_key,
+    IdentitySource, default_keys_dir, did_key, load_or_generate_key, resolve_identity, save_did_key,
 };
 pub use naming::{Machine, NameTable, Participant, normalize_topic, qualify_participant_topic};
 pub use peerbus::DatapodMsg;

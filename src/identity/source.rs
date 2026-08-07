@@ -37,8 +37,6 @@ pub enum IdentitySource {
     Name(String),
     /// Persistent key for a specific DID string stored at `~/.local/share/agentio/keys/did/{did}.key`.
     DidKey(String),
-    /// Deterministic key derived from a name string using BLAKE3 in RAM.
-    DerivedName(String),
     /// Persistent key file stored at the explicit given path (mode `0600`).
     File(PathBuf),
     /// Explicit in-memory ed25519 `SecretKey`.
@@ -63,12 +61,6 @@ impl From<&Path> for IdentitySource {
     }
 }
 
-/// Derive a deterministic `SecretKey` from a string (e.g. human-readable machine name) using BLAKE3.
-pub fn derive_secret_from_name(name: &str) -> SecretKey {
-    let hash = blake3::hash(name.as_bytes());
-    SecretKey::from_bytes(hash.as_bytes())
-}
-
 /// Save a secret key under its canonical `did:key` string at `~/.local/share/agentio/keys/did/{did}.key`.
 pub fn save_did_key(key: &SecretKey) -> Result<String> {
     let did = endpoint_to_did_key(&key.public())?;
@@ -76,6 +68,16 @@ pub fn save_did_key(key: &SecretKey) -> Result<String> {
     let key_path = default_keys_dir()
         .join("did")
         .join(format!("{safe_did}.key"));
+    if key_path.exists() {
+        let existing = load_existing_key(&key_path)?;
+        if existing.public() != key.public() {
+            return Err(Error::Identity(format!(
+                "DID index key at {} does not match the requested identity",
+                key_path.display()
+            )));
+        }
+        return Ok(did);
+    }
     if let Some(parent) = key_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -86,8 +88,7 @@ pub fn save_did_key(key: &SecretKey) -> Result<String> {
         use std::os::unix::fs::OpenOptionsExt;
         let mut file = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(&key_path)?;
         file.write_all(&bytes)?;
@@ -97,8 +98,7 @@ pub fn save_did_key(key: &SecretKey) -> Result<String> {
     {
         let mut file = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(&key_path)?;
         file.write_all(&bytes)?;
     }
@@ -110,10 +110,7 @@ pub fn save_did_key(key: &SecretKey) -> Result<String> {
 pub fn load_or_generate_key(path: impl AsRef<Path>) -> Result<SecretKey> {
     let path = path.as_ref();
     if path.exists() {
-        let mut file = fs::File::open(path)?;
-        let mut bytes = [0u8; 32];
-        file.read_exact(&mut bytes)?;
-        Ok(SecretKey::from_bytes(&bytes))
+        load_existing_key(path)
     } else {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -143,13 +140,39 @@ pub fn load_or_generate_key(path: impl AsRef<Path>) -> Result<SecretKey> {
     }
 }
 
+fn load_existing_key(path: &Path) -> Result<SecretKey> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(Error::Identity(format!(
+                "key file {} has insecure permissions {mode:o}; expected 600 or stricter",
+                path.display()
+            )));
+        }
+    }
+
+    let mut file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let key_bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        Error::Identity(format!(
+            "key file {} contains {} bytes; expected 32",
+            path.display(),
+            bytes.len()
+        ))
+    })?;
+    Ok(SecretKey::from_bytes(&key_bytes))
+}
+
 /// Resolve an `IdentitySource` into a peerbus `SecretKey`.
 pub fn resolve_identity(source: &IdentitySource) -> Result<SecretKey> {
     match source {
         IdentitySource::Ephemeral => {
             let key_path = default_keys_dir().join("ephemeral.key");
             let key = load_or_generate_key(key_path)?;
-            let _ = save_did_key(&key);
+            save_did_key(&key)?;
             Ok(key)
         }
         IdentitySource::Random => Ok(SecretKey::generate()),
@@ -159,7 +182,7 @@ pub fn resolve_identity(source: &IdentitySource) -> Result<SecretKey> {
                 .join("name")
                 .join(format!("{safe_name}.key"));
             let key = load_or_generate_key(key_path)?;
-            let _ = save_did_key(&key);
+            save_did_key(&key)?;
             Ok(key)
         }
         IdentitySource::DidKey(did_str) => {
@@ -188,10 +211,9 @@ pub fn resolve_identity(source: &IdentitySource) -> Result<SecretKey> {
         }
         IdentitySource::File(path) => {
             let key = load_or_generate_key(path)?;
-            let _ = save_did_key(&key);
+            save_did_key(&key)?;
             Ok(key)
         }
-        IdentitySource::DerivedName(name) => Ok(derive_secret_from_name(name)),
         IdentitySource::Key(key) => Ok(key.clone()),
     }
 }
@@ -199,15 +221,45 @@ pub fn resolve_identity(source: &IdentitySource) -> Result<SecretKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct KeysDirGuard {
+        previous: Option<std::ffi::OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl KeysDirGuard {
+        fn set(path: &Path) -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+            let previous = std::env::var_os("AGENTIO_KEYS_DIR");
+            unsafe {
+                std::env::set_var("AGENTIO_KEYS_DIR", path);
+            }
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for KeysDirGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("AGENTIO_KEYS_DIR", value),
+                    None => std::env::remove_var("AGENTIO_KEYS_DIR"),
+                }
+            }
+        }
+    }
 
     #[test]
-    fn test_derive_secret_from_name() {
-        let key1 = derive_secret_from_name("r2d2-head");
-        let key2 = derive_secret_from_name("r2d2-head");
-        let key3 = derive_secret_from_name("r2d2-base");
-
-        assert_eq!(key1.public(), key2.public());
-        assert_ne!(key1.public(), key3.public());
+    fn random_identities_differ() {
+        let first = resolve_identity(&IdentitySource::Random).unwrap();
+        let second = resolve_identity(&IdentitySource::Random).unwrap();
+        assert_ne!(first.public(), second.public());
     }
 
     #[test]
@@ -225,18 +277,47 @@ mod tests {
     #[test]
     fn test_did_identity_resolution() {
         let temp_dir = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("AGENTIO_KEYS_DIR", temp_dir.path());
-        }
+        let _guard = KeysDirGuard::set(temp_dir.path());
 
         let key = SecretKey::generate();
         let did = save_did_key(&key).unwrap();
 
         let resolved = resolve_identity(&IdentitySource::DidKey(did.clone())).unwrap();
         assert_eq!(key.public(), resolved.public());
+    }
 
-        unsafe {
-            std::env::remove_var("AGENTIO_KEYS_DIR");
+    #[test]
+    fn named_identity_reloads_from_disk() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _guard = KeysDirGuard::set(temp_dir.path());
+        let source = IdentitySource::Name("persistent".to_string());
+        let first = resolve_identity(&source).unwrap();
+        let second = resolve_identity(&source).unwrap();
+        assert_eq!(first.public(), second.public());
+    }
+
+    #[test]
+    fn invalid_key_length_is_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("bad.key");
+        fs::write(&path, [0u8; 31]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         }
+        assert!(matches!(
+            load_or_generate_key(path),
+            Err(Error::Identity(_))
+        ));
+    }
+
+    #[test]
+    fn did_index_write_failure_is_visible() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let not_a_directory = temp_dir.path().join("file");
+        fs::write(&not_a_directory, b"occupied").unwrap();
+        let _guard = KeysDirGuard::set(&not_a_directory);
+        assert!(resolve_identity(&IdentitySource::Name("agent".to_string())).is_err());
     }
 }

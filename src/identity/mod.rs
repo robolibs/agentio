@@ -40,8 +40,7 @@ pub mod endpoint_ext {
 
 pub use endpoint_ext as did_key;
 pub use source::{
-    IdentitySource, default_keys_dir, derive_secret_from_name, load_or_generate_key,
-    resolve_identity, save_did_key,
+    IdentitySource, default_keys_dir, load_or_generate_key, resolve_identity, save_did_key,
 };
 
 #[cfg(test)]
