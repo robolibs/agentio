@@ -1,0 +1,30 @@
+[package]
+name = "agentio"
+version = "0.1.0"
+edition = "2024"
+authors = ["Trim Bresilla <trim.bresilla@gmail.com>"]
+description = "Agent IO interface and agent composition crate on top of peerbus"
+license = "MIT"
+readme = "README.md"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+peerbus = { path = "../peerbus" }
+authbox = { path = "../authbox" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
+blake3 = { version = "1", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.0", default-features = false, features = ["use-std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+thiserror = "2.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+
+
