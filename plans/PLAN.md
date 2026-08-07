@@ -13,7 +13,7 @@
 - **Risk**: HIGH
 - **Category**: correctness, security, tests, architecture, dependencies, DX,
   performance, release, and documentation
-- **Planned at**: unborn `main` branch with no commit, 2026-08-07
+- **Planned at**: commit `df87e97`, 2026-08-07
 - **Overall status**: TODO
 
 ## Mandatory repository rules
@@ -37,8 +37,8 @@ These rules apply to every phase:
 
 ## Baseline and drift check
 
-This repository currently has no commit, so a normal SHA-based drift check is
-impossible. Before implementation:
+The operator approved and established baseline commit `df87e97`. Before each
+phase:
 
 > **Tracking note**: the active global Git ignore file contains a `PLAN.md`
 > pattern, so this file does not appear in normal `git status` output. If the
@@ -47,19 +47,15 @@ impossible. Before implementation:
 > automatically.
 
 1. Run `git status --short --branch`.
-2. Confirm the branch still reports `No commits yet on main` or obtain the new
-   baseline commit from the operator.
-3. If there is still no commit, STOP and ask the operator to establish a
-   baseline. Do not create an initial commit containing the entire repository
-   without explicit approval.
-4. Once a baseline exists, record its short SHA in this section and run:
+2. Confirm the baseline remains in history.
+3. Run:
 
    ```bash
-   git diff --stat <baseline-sha>..HEAD -- \
+   git diff --stat df87e97..HEAD -- \
      Cargo.toml Cargo.lock Makefile README.md .github src examples tests
    ```
 
-5. Compare the current-state excerpts below with the live code. Any material
+4. Compare the current-state excerpts below with the live code. Any material
    mismatch is a STOP condition.
 
 ## Goals
@@ -341,7 +337,7 @@ After the operator establishes a baseline:
 
 | Phase | Title | Priority | Effort | Depends on | Status |
 |---|---|---:|---:|---|---|
-| 0 | Establish baseline and decisions | P1 | S | none | TODO |
+| 0 | Establish baseline and decisions | P1 | S | none | DONE |
 | 1 | Restore clean build and automation | P1 | M | 0 | TODO |
 | 2 | Add characterization test harness | P1 | M | 1 | TODO |
 | 3 | Fix resolver lifecycle and errors | P1 | M | 2 | TODO |
