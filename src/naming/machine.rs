@@ -23,13 +23,3 @@ impl Machine {
         did_key::endpoint_to_did_key(&self.endpoint_id)
     }
 }
-
-/// Representation of a Participant ("node" in ROS/robot jargon): a logical module
-/// such as `camera` or `planner` running on a Machine.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Participant {
-    /// Logical name of the participant.
-    pub name: String,
-    /// Machine hosting this participant.
-    pub machine_id: EndpointId,
-}

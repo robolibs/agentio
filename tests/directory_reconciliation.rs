@@ -15,6 +15,7 @@ fn late_joiner_learns_a_missed_announcement() {
     let client_id = client_key.public();
     let server = Agent::builder()
         .identity(server_key)
+        .name("server")
         .allow_peer(client_id)
         .build()
         .unwrap();
@@ -23,6 +24,7 @@ fn late_joiner_learns_a_missed_announcement() {
         .unwrap();
     let client = Agent::builder()
         .identity(client_key)
+        .name("client")
         .bootstrap([server_id])
         .allow_peer(server_id)
         .build()
@@ -37,6 +39,7 @@ fn late_joiner_learns_a_missed_announcement() {
         entry.request_type_hash(),
         wire_type_hash::<ReconciledSample>()
     );
+    assert_eq!(client.name_table().resolve_name("server"), Some(server_id));
 }
 
 #[test]
@@ -56,6 +59,7 @@ fn healthy_seed_reconciles_when_another_seed_is_stale() {
         .unwrap();
     let client = Agent::builder()
         .identity(client_key)
+        .name("client")
         .bootstrap([stale_id, server_id])
         .allow_peer(server_id)
         .build()
@@ -79,6 +83,7 @@ fn dropping_hosted_handle_withdraws_from_seed() {
         .unwrap();
     let server = Agent::builder()
         .identity(server_key)
+        .name("server")
         .bootstrap([client_id])
         .allow_peer(client_id)
         .build()
@@ -93,6 +98,7 @@ fn dropping_hosted_handle_withdraws_from_seed() {
             .lookup_exchange("/reconcile/withdraw", ExchangeKind::PubSub)
             .is_some()
     );
+    assert_eq!(client.name_table().resolve_name("server"), Some(server_id));
 
     drop(publisher);
     assert!(
@@ -101,6 +107,7 @@ fn dropping_hosted_handle_withdraws_from_seed() {
             .lookup_exchange("/reconcile/withdraw", ExchangeKind::PubSub)
             .is_none()
     );
+    assert_eq!(client.name_table().resolve_name("server"), None);
 }
 
 #[test]

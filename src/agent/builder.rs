@@ -175,10 +175,17 @@ impl AgentBuilder {
         let (resolver_shutdown_tx, resolver_shutdown_rx) = std::sync::mpsc::channel();
         let worker_health = health.clone();
         let dir_clone = directory.clone();
+        let resolver_names = name_table.clone();
         let resolver_join = std::thread::Builder::new()
             .name(format!("agentio-resolver-{machine_name}"))
             .spawn(move || {
-                run_resolution_loop(server, dir_clone, worker_health, resolver_shutdown_rx);
+                run_resolution_loop(
+                    server,
+                    dir_clone,
+                    resolver_names,
+                    worker_health,
+                    resolver_shutdown_rx,
+                );
             })?;
 
         let control_config = ControlLoopConfig {
@@ -188,6 +195,7 @@ impl AgentBuilder {
             mode: self.directory_mode.clone(),
             seeds: self.bootstrap_peers.clone(),
             directory: directory.clone(),
+            name_table: name_table.clone(),
             machine_name: machine_name.clone(),
             hosted_records: hosted_records.clone(),
             next_revision: next_revision.clone(),

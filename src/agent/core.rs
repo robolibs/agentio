@@ -172,6 +172,7 @@ impl Agent {
             &self.inner.directory_mode,
             &self.inner.bootstrap_peers,
             &self.inner.directory,
+            &self.inner.name_table,
             &self.inner.health,
         )
     }
@@ -184,6 +185,7 @@ impl Agent {
             mode: self.inner.directory_mode.clone(),
             seeds: self.inner.bootstrap_peers.clone(),
             directory: self.inner.directory.clone(),
+            name_table: self.inner.name_table.clone(),
             machine_name: self.inner.machine_name.clone(),
             hosted_records: self.inner.hosted_records.clone(),
             next_revision: self.inner.next_revision.clone(),
@@ -538,6 +540,9 @@ impl Agent {
                 response_type_hash: entry.response_type_hash(),
             },
         );
+        self.inner
+            .name_table
+            .sync_from_entries(&self.inner.directory.all_entries());
         announce_entry(&self.inner, entry);
         Ok(())
     }
@@ -620,6 +625,9 @@ pub(crate) fn withdraw_owned_entry(inner: &AgentInner, entry: &TopicEntry) {
     if inner.directory.withdraw(&withdrawal).is_err() {
         inner.health.announcement_failed();
     }
+    inner
+        .name_table
+        .sync_from_entries(&inner.directory.all_entries());
     let request = ResolveRequest::Withdraw {
         entries: vec![withdrawal],
     };
@@ -640,6 +648,7 @@ pub(crate) fn reconcile_directory(
     mode: &DirectoryMode,
     seeds: &[EndpointId],
     directory: &Directory,
+    name_table: &NameTable,
     health: &ControlPlaneHealth,
 ) -> Result<usize> {
     let targets = resolution_targets(mode, seeds);
@@ -681,6 +690,7 @@ pub(crate) fn reconcile_directory(
     }
     let attempted = targets.iter().filter(|id| **id != endpoint_id).count();
     let stale = attempted.saturating_sub(healthy);
+    name_table.sync_from_entries(&directory.all_entries());
     if healthy > 0 || attempted == 0 {
         health.reconciled(unix_time_ms(), stale.try_into().unwrap_or(u64::MAX));
         Ok(learned)
@@ -698,6 +708,7 @@ pub(crate) struct ControlLoopConfig {
     pub(crate) mode: DirectoryMode,
     pub(crate) seeds: Vec<EndpointId>,
     pub(crate) directory: Directory,
+    pub(crate) name_table: NameTable,
     pub(crate) machine_name: String,
     pub(crate) hosted_records: Arc<Mutex<std::collections::HashMap<HostedKey, HostedRecord>>>,
     pub(crate) next_revision: Arc<AtomicU64>,
@@ -716,6 +727,7 @@ pub(crate) fn run_control_loop(
             &config.mode,
             &config.seeds,
             &config.directory,
+            &config.name_table,
             &config.health,
         );
         renew_hosted_records(&config);
@@ -764,12 +776,16 @@ fn renew_hosted_records(config: &ControlLoopConfig) -> usize {
             batch,
         );
     }
+    config
+        .name_table
+        .sync_from_entries(&config.directory.all_entries());
     renewed.len()
 }
 
 pub(crate) fn run_resolution_loop(
     mut server: ReqServer<DatapodMsg, DatapodMsg>,
     directory: Directory,
+    name_table: NameTable,
     health: Arc<ControlPlaneHealth>,
     shutdown_rx: std::sync::mpsc::Receiver<()>,
 ) {
@@ -846,6 +862,7 @@ pub(crate) fn run_resolution_loop(
                             }
                         }
                     };
+                    name_table.sync_from_entries(&directory.all_entries());
                     if let Ok(resp_bytes) = resp.to_bytes() {
                         let resp_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, resp_bytes);
                         if let Err(error) = reply.respond(&resp_msg) {
