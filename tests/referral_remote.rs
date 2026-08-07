@@ -42,10 +42,7 @@ fn resolves_and_transfers_over_forced_quic() {
     let mut received = None;
     for _ in 0..20 {
         publisher.send(&RemoteSample { sequence: 42 }).unwrap();
-        if let Some(sample) = subscriber
-            .recv_timeout(Duration::from_millis(250))
-            .unwrap()
-        {
+        if let Some(sample) = subscriber.recv_timeout(Duration::from_millis(250)).unwrap() {
             received = Some(sample);
             break;
         }

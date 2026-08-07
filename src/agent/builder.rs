@@ -1,5 +1,6 @@
 use peerbus::{DatapodMsg, EndpointId, Node};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use super::core::{Agent, AgentInner, ResolverWorker, run_resolution_loop};
@@ -178,6 +179,7 @@ impl AgentBuilder {
 
         let inner = Arc::new(AgentInner {
             node,
+            secret,
             directory,
             name_table,
             machine_name,
@@ -189,6 +191,7 @@ impl AgentBuilder {
             no_relay: self.no_relay,
             skip_shm: self.skip_shm,
             health,
+            next_revision: AtomicU64::new(1),
             resolver_worker: Mutex::new(Some(ResolverWorker {
                 shutdown_tx,
                 join_handle,

@@ -14,7 +14,8 @@ pub use agent::{Agent, AgentBuilder, DirectoryMode, TryIntoBootstrapPeer};
 pub use authbox;
 pub use authbox::did;
 pub use directory::{
-    Directory, DirectoryHealth, RESOLUTION_TOPIC, ResolveRequest, ResolveResponse, TopicEntry,
+    Directory, DirectoryHealth, ExchangeKind, RESOLUTION_TOPIC, ResolveRequest, ResolveResponse,
+    TopicEntry, TopicRecordSpec, TopicWithdrawal,
 };
 pub use error::{Error, Result};
 pub use escape::ById;

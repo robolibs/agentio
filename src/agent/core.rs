@@ -2,12 +2,14 @@ use peerbus::{
     AckServer, AnsServer, DatapodMsg, EndpointId, Node, PipClient, PipServer, Publisher, PutClient,
     QueClient, ReqClient, ReqServer, Subscriber, wire_type_hash,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::directory::{
-    ControlPlaneHealth, Directory, DirectoryHealth, RESOLUTION_TOPIC, RESOLUTION_TYPE_HASH,
-    ResolveRequest, ResolveResponse, TopicEntry,
+    ControlPlaneHealth, Directory, DirectoryHealth, ExchangeKind, MAX_DIRECTORY_BATCH,
+    RESOLUTION_TOPIC, RESOLUTION_TYPE_HASH, ResolveRequest, ResolveResponse, TopicEntry,
+    TopicRecordSpec,
 };
 use crate::error::{Error, Result};
 use crate::escape::ById;
@@ -19,6 +21,7 @@ use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
 
 pub(crate) struct AgentInner {
     pub(crate) node: Node,
+    pub(crate) secret: peerbus::SecretKey,
     pub(crate) directory: Directory,
     pub(crate) name_table: NameTable,
     pub(crate) machine_name: String,
@@ -30,6 +33,7 @@ pub(crate) struct AgentInner {
     pub(crate) no_relay: bool,
     pub(crate) skip_shm: bool,
     pub(crate) health: Arc<ControlPlaneHealth>,
+    pub(crate) next_revision: AtomicU64,
     pub(crate) resolver_worker: Mutex<Option<ResolverWorker>>,
 }
 
@@ -161,13 +165,18 @@ impl Agent {
     {
         let normalized = normalize_topic(topic)?;
         let publisher = self.inner.node.publisher::<T>(&normalized)?;
-        let entry = TopicEntry::new(
-            &normalized,
-            wire_type_hash::<T>(),
-            self.inner.endpoint_id,
-            Some(&self.inner.machine_name),
-        );
-        self.inner.directory.register(entry.clone());
+        let entry = TopicEntry::signed(
+            TopicRecordSpec::new(
+                &normalized,
+                ExchangeKind::PubSub,
+                wire_type_hash::<T>(),
+                None,
+                self.next_revision(),
+                Some(&self.inner.machine_name),
+            ),
+            &self.inner.secret,
+        )?;
+        self.inner.directory.register(entry.clone())?;
         self.announce_topic_to_peers(&entry);
         Ok(publisher)
     }
@@ -179,7 +188,12 @@ impl Agent {
         <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let entry = self.resolve_topic(&normalized)?;
+        let entry = self.resolve_exchange(
+            &normalized,
+            ExchangeKind::PubSub,
+            wire_type_hash::<T>(),
+            None,
+        )?;
         let peer_id = entry.endpoint_id();
         self.inner
             .node
@@ -194,7 +208,12 @@ impl Agent {
         <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let qualified = qualify_participant_topic(participant, topic)?;
-        let entry = self.resolve_topic(&qualified)?;
+        let entry = self.resolve_exchange(
+            &qualified,
+            ExchangeKind::PubSub,
+            wire_type_hash::<T>(),
+            None,
+        )?;
         let peer_id = entry.endpoint_id();
         self.inner
             .node
@@ -212,13 +231,18 @@ impl Agent {
     {
         let normalized = normalize_topic(topic)?;
         let server = self.inner.node.req_server::<Req, Res>(&normalized)?;
-        let entry = TopicEntry::new(
-            &normalized,
-            wire_type_hash::<Req>(),
-            self.inner.endpoint_id,
-            Some(&self.inner.machine_name),
-        );
-        self.inner.directory.register(entry.clone());
+        let entry = TopicEntry::signed(
+            TopicRecordSpec::new(
+                &normalized,
+                ExchangeKind::ReqRes,
+                wire_type_hash::<Req>(),
+                Some(wire_type_hash::<Res>()),
+                self.next_revision(),
+                Some(&self.inner.machine_name),
+            ),
+            &self.inner.secret,
+        )?;
+        self.inner.directory.register(entry.clone())?;
         self.announce_topic_to_peers(&entry);
         Ok(server)
     }
@@ -232,7 +256,12 @@ impl Agent {
         <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let entry = self.resolve_topic(&normalized)?;
+        let entry = self.resolve_exchange(
+            &normalized,
+            ExchangeKind::ReqRes,
+            wire_type_hash::<Req>(),
+            Some(wire_type_hash::<Res>()),
+        )?;
         let peer_id = entry.endpoint_id();
         self.inner
             .node
@@ -250,13 +279,18 @@ impl Agent {
     {
         let normalized = normalize_topic(topic)?;
         let server = self.inner.node.que_server::<Que, Ans>(&normalized)?;
-        let entry = TopicEntry::new(
-            &normalized,
-            wire_type_hash::<Que>(),
-            self.inner.endpoint_id,
-            Some(&self.inner.machine_name),
-        );
-        self.inner.directory.register(entry.clone());
+        let entry = TopicEntry::signed(
+            TopicRecordSpec::new(
+                &normalized,
+                ExchangeKind::QueAns,
+                wire_type_hash::<Que>(),
+                Some(wire_type_hash::<Ans>()),
+                self.next_revision(),
+                Some(&self.inner.machine_name),
+            ),
+            &self.inner.secret,
+        )?;
+        self.inner.directory.register(entry.clone())?;
         self.announce_topic_to_peers(&entry);
         Ok(server)
     }
@@ -270,7 +304,12 @@ impl Agent {
         <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let entry = self.resolve_topic(&normalized)?;
+        let entry = self.resolve_exchange(
+            &normalized,
+            ExchangeKind::QueAns,
+            wire_type_hash::<Que>(),
+            Some(wire_type_hash::<Ans>()),
+        )?;
         let peer_id = entry.endpoint_id();
         self.inner
             .node
@@ -288,13 +327,18 @@ impl Agent {
     {
         let normalized = normalize_topic(topic)?;
         let server = self.inner.node.put_server::<Put, Ack>(&normalized)?;
-        let entry = TopicEntry::new(
-            &normalized,
-            wire_type_hash::<Put>(),
-            self.inner.endpoint_id,
-            Some(&self.inner.machine_name),
-        );
-        self.inner.directory.register(entry.clone());
+        let entry = TopicEntry::signed(
+            TopicRecordSpec::new(
+                &normalized,
+                ExchangeKind::PutAck,
+                wire_type_hash::<Put>(),
+                Some(wire_type_hash::<Ack>()),
+                self.next_revision(),
+                Some(&self.inner.machine_name),
+            ),
+            &self.inner.secret,
+        )?;
+        self.inner.directory.register(entry.clone())?;
         self.announce_topic_to_peers(&entry);
         Ok(server)
     }
@@ -308,7 +352,12 @@ impl Agent {
         <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let entry = self.resolve_topic(&normalized)?;
+        let entry = self.resolve_exchange(
+            &normalized,
+            ExchangeKind::PutAck,
+            wire_type_hash::<Put>(),
+            Some(wire_type_hash::<Ack>()),
+        )?;
         let peer_id = entry.endpoint_id();
         self.inner
             .node
@@ -332,13 +381,18 @@ impl Agent {
             .inner
             .node
             .pip_server::<ClientMsg, ServerMsg>(&normalized)?;
-        let entry = TopicEntry::new(
-            &normalized,
-            wire_type_hash::<ClientMsg>(),
-            self.inner.endpoint_id,
-            Some(&self.inner.machine_name),
-        );
-        self.inner.directory.register(entry.clone());
+        let entry = TopicEntry::signed(
+            TopicRecordSpec::new(
+                &normalized,
+                ExchangeKind::Pip,
+                wire_type_hash::<ClientMsg>(),
+                Some(wire_type_hash::<ServerMsg>()),
+                self.next_revision(),
+                Some(&self.inner.machine_name),
+            ),
+            &self.inner.secret,
+        )?;
+        self.inner.directory.register(entry.clone())?;
         self.announce_topic_to_peers(&entry);
         Ok(server)
     }
@@ -355,7 +409,12 @@ impl Agent {
         <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let entry = self.resolve_topic(&normalized)?;
+        let entry = self.resolve_exchange(
+            &normalized,
+            ExchangeKind::Pip,
+            wire_type_hash::<ClientMsg>(),
+            Some(wire_type_hash::<ServerMsg>()),
+        )?;
         let peer_id = entry.endpoint_id();
         self.inner
             .node
@@ -370,42 +429,63 @@ impl Agent {
             return Ok(entry);
         }
 
-        // Referral resolution over peerbus req/res
+        Err(Error::ResolutionFailed(format!(
+            "topic '{normalized}' is not present in the local directory; use a typed client for referral resolution"
+        )))
+    }
+
+    fn resolve_exchange(
+        &self,
+        topic: &str,
+        exchange: ExchangeKind,
+        request_type_hash: u64,
+        response_type_hash: Option<u64>,
+    ) -> Result<TopicEntry> {
+        if let Some(entry) = self.inner.directory.lookup_exchange(topic, exchange) {
+            entry.validate_exchange(exchange, request_type_hash, response_type_hash)?;
+            return Ok(entry);
+        }
+
         let targets = match &self.inner.directory_mode {
             DirectoryMode::FrontDoor(id) => vec![*id],
             DirectoryMode::Replicated => self.inner.bootstrap_peers.clone(),
         };
 
-        for _attempt in 0..10 {
-            for target_id in &targets {
-                if let Ok(mut client) = self
-                    .inner
-                    .node
-                    .req_client::<DatapodMsg, DatapodMsg>(*target_id, RESOLUTION_TOPIC)
-                {
-                    let req = ResolveRequest::Query {
-                        topic: normalized.clone(),
-                    };
-                    if let Ok(req_bytes) = req.to_bytes() {
-                        let req_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, req_bytes);
-                        if let Ok(sample) = client.call(&req_msg)
-                            && let Ok(ResolveResponse::QueryResult {
-                                found: true,
-                                entry: Some(entry),
-                            }) = ResolveResponse::from_bytes(sample.payload())
-                        {
-                            self.inner.directory.register(entry.clone());
-                            return Ok(entry);
-                        }
+        for target_id in &targets {
+            if let Ok(mut client) = self
+                .inner
+                .node
+                .req_client::<DatapodMsg, DatapodMsg>(*target_id, RESOLUTION_TOPIC)
+            {
+                let request = ResolveRequest::Query {
+                    topic: topic.to_string(),
+                    exchange,
+                    request_type_hash,
+                    response_type_hash,
+                };
+                if let Ok(request_bytes) = request.to_bytes() {
+                    let message = DatapodMsg::new(RESOLUTION_TYPE_HASH, request_bytes);
+                    if let Ok(sample) = client.call(&message)
+                        && let Ok(ResolveResponse::QueryResult {
+                            found: true,
+                            entry: Some(entry),
+                        }) = ResolveResponse::from_bytes(sample.payload())
+                    {
+                        entry.validate_exchange(exchange, request_type_hash, response_type_hash)?;
+                        self.inner.directory.register(entry.clone())?;
+                        return Ok(entry);
                     }
                 }
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
 
         Err(Error::ResolutionFailed(format!(
-            "topic '{normalized}' could not be resolved within the agent composition"
+            "topic '{topic}' could not be resolved within the agent composition"
         )))
+    }
+
+    fn next_revision(&self) -> u64 {
+        self.inner.next_revision.fetch_add(1, Ordering::Relaxed)
     }
 
     fn announce_topic_to_peers(&self, entry: &TopicEntry) {
@@ -462,20 +542,67 @@ pub(crate) fn run_resolution_loop(
                 let req_bytes = sample.payload();
                 if let Ok(req) = ResolveRequest::from_bytes(req_bytes) {
                     let resp = match req {
-                        ResolveRequest::Query { topic } => {
-                            let entry = directory.lookup(&topic);
+                        ResolveRequest::Query {
+                            topic,
+                            exchange,
+                            request_type_hash,
+                            response_type_hash,
+                        } => {
+                            let entry =
+                                directory.lookup_exchange(&topic, exchange).filter(|entry| {
+                                    entry
+                                        .validate_exchange(
+                                            exchange,
+                                            request_type_hash,
+                                            response_type_hash,
+                                        )
+                                        .is_ok()
+                                });
                             ResolveResponse::QueryResult {
                                 found: entry.is_some(),
                                 entry,
                             }
                         }
-                        ResolveRequest::List => ResolveResponse::ListResult {
-                            entries: directory.all_entries(),
-                        },
+                        ResolveRequest::List { offset, limit } => {
+                            let entries = directory.all_entries();
+                            let end = offset.saturating_add(limit).min(entries.len());
+                            let page = entries.get(offset..end).unwrap_or(&[]).to_vec();
+                            ResolveResponse::ListResult {
+                                entries: page,
+                                next_offset: (end < entries.len()).then_some(end),
+                            }
+                        }
                         ResolveRequest::Announce { entries } => {
-                            let count = entries.len();
-                            directory.register_many(entries);
-                            ResolveResponse::Announced { count }
+                            match directory.register_many(entries) {
+                                Ok(count) => ResolveResponse::Announced { count },
+                                Err(error) => {
+                                    health.reject_record();
+                                    ResolveResponse::Rejected {
+                                        message: error.to_string(),
+                                    }
+                                }
+                            }
+                        }
+                        ResolveRequest::Withdraw { entries } => {
+                            let mut count = 0;
+                            let mut failure = None;
+                            for withdrawal in entries.into_iter().take(MAX_DIRECTORY_BATCH) {
+                                match directory.withdraw(&withdrawal) {
+                                    Ok(removed) => count += usize::from(removed),
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(error) = failure {
+                                health.reject_record();
+                                ResolveResponse::Rejected {
+                                    message: error.to_string(),
+                                }
+                            } else {
+                                ResolveResponse::Withdrawn { count }
+                            }
                         }
                     };
                     if let Ok(resp_bytes) = resp.to_bytes() {
