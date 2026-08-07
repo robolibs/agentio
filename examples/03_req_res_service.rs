@@ -1,4 +1,4 @@
-use agentio::Agent;
+use agentio::{Agent, IdentitySource};
 use datapod::datapod;
 use std::thread;
 use std::time::Duration;
@@ -19,11 +19,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     // Machine 1 hosting perception service
-    let server_agent = Agent::builder().name("perception-node").build()?;
+    let server_agent = Agent::builder()
+        .identity(IdentitySource::Random)
+        .name("perception-node")
+        .allow_any_peer()
+        .build()?;
 
     // Machine 2 calling perception service
     let client_agent = Agent::builder()
+        .identity(IdentitySource::Random)
         .name("planner-node")
+        .allow_any_peer()
         .bootstrap([server_agent.endpoint_id()])
         .build()?;
 

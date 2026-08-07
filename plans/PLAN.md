@@ -346,7 +346,7 @@ After the operator establishes a baseline:
 | 6 | Reconcile and expire directory state | P1 | L | 5 | DONE |
 | 7 | Remove insecure derived identities | P1 | M | 2 | DONE |
 | 8 | Fix naming and participant contract | P2 | M | 6 | DONE |
-| 9 | Repair examples and benchmarks | P2 | M | 4, 6 | TODO |
+| 9 | Repair examples and benchmarks | P2 | M | 4, 6 | DONE |
 | 10 | Align documentation and release model | P2 | M | 1-9 | TODO |
 | 11 | Run final security and release gates | P1 | M | 1-10 | TODO |
 

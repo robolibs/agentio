@@ -1,4 +1,4 @@
-use agentio::Agent;
+use agentio::{Agent, IdentitySource};
 use datapod::datapod;
 use std::thread;
 use std::time::Duration;
@@ -11,9 +11,15 @@ struct StatusPing {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let node1 = Agent::builder().name("node-1").build()?;
+    let node1 = Agent::builder()
+        .identity(IdentitySource::Random)
+        .name("node-1")
+        .allow_any_peer()
+        .build()?;
     let node2 = Agent::builder()
+        .identity(IdentitySource::Random)
         .name("node-2")
+        .allow_any_peer()
         .bootstrap([node1.endpoint_id()])
         .build()?;
 

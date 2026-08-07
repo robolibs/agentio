@@ -10,6 +10,8 @@ pub struct HeavyImageHeader {
     pub width: u64,
     pub height: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.rpc_req.v1")]
@@ -21,6 +23,8 @@ pub struct HeavyRpcReq {
 pub struct HeavyRpcRes {
     pub checksum: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.query.v1")]
@@ -33,12 +37,16 @@ pub struct HeavyQuery {
 pub struct HeavyAnswer {
     pub chunk_index: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.upload_block.v1")]
 pub struct HeavyUploadBlock {
     pub block_index: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.upload_ack.v1")]
@@ -51,12 +59,16 @@ pub struct HeavyUploadAck {
 pub struct HeavyPipFrame {
     pub frame_seq: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.pip_ack.v1")]
 pub struct HeavyPipAck {
     pub ack_seq: u64,
     pub bytes_received: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_shm = args.iter().any(|a| a == "--use-shm");
 
     println!("============================================================");
-    println!("     agentio: Heavy Data Multi-Megabyte Server Benchmark   ");
+    println!("   agentio: Heavy Data Multi-Megabyte Throughput Demo     ");
     println!("============================================================");
 
     let mut builder = Agent::builder()
@@ -93,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  -> DID:KEY:     {}", did_key);
     println!("  -> Addr:        {:?}\n", agent.endpoint_addr());
 
-    println!("  Run the heavy client benchmark using:");
+    println!("  Run the heavy client throughput demo using:");
     println!("    cargo run --example 09_heavy_client -- {}", did_key);
     println!("============================================================\n");
 
@@ -105,19 +117,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut frame_seq = 1u64;
         let payload_size = 5_000_000u64; // 5 MB per frame
         loop {
-            if let Ok(mut loan) = image_pub.loan(payload_size as usize) {
-                *loan.header_mut() = HeavyImageHeader {
-                    frame_id: frame_seq,
-                    width: 3840,
-                    height: 2160,
-                    payload_bytes: payload_size,
-                };
-                let payload = loan.payload_mut();
-                for (i, byte) in payload.iter_mut().enumerate() {
-                    *byte = (frame_seq as usize + i) as u8;
-                }
-                let _ = image_pub.publish(loan);
-            }
+            let data = (0..payload_size)
+                .map(|index| frame_seq.wrapping_add(index) as u8)
+                .collect();
+            let _ = image_pub.send(&HeavyImageHeader {
+                frame_id: frame_seq,
+                width: 3840,
+                height: 2160,
+                payload_bytes: payload_size,
+                data,
+            });
             frame_seq += 1;
             thread::sleep(Duration::from_millis(500));
         }
@@ -146,6 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = reply.respond(&HeavyRpcRes {
                         checksum: checksum_u64,
                         payload_bytes: req_bytes as u64,
+                        data: dummy_data,
                     });
                 }
                 Ok(None) => {}
@@ -170,9 +180,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
 
                     for idx in 0..q.total_chunks {
+                        let data = vec![idx as u8; q.chunk_bytes as usize];
                         let _ = ans_sender.send(&HeavyAnswer {
                             chunk_index: idx,
                             payload_bytes: q.chunk_bytes,
+                            data,
                         });
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -198,7 +210,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut total_bytes = 0u64;
                     while let Ok(Some(block)) = puts_recv.next() {
                         blocks += 1;
-                        total_bytes += block.header().payload_bytes;
+                        let header = block.header();
+                        let payload = block.payload();
+                        if payload.len() as u64 != header.payload_bytes
+                            || payload.iter().any(|byte| *byte != header.block_index as u8)
+                        {
+                            eprintln!("  [Put/Ack] Rejected invalid upload block");
+                            continue;
+                        }
+                        total_bytes += payload.len() as u64;
                         if blocks.is_multiple_of(10) {
                             println!(
                                 "  [Put/Ack] Progress: Received {} blocks ({:.2} MB)",
@@ -234,10 +254,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  [Pip] Bi-directional heavy streaming session opened...");
                     while let Ok(Some(frame)) = pip_session.next() {
                         let seq = frame.header().frame_seq;
-                        let bytes = frame.header().payload_bytes;
+                        let payload = frame.payload();
+                        let bytes = payload.len() as u64;
+                        if bytes != frame.header().payload_bytes
+                            || payload
+                                .iter()
+                                .any(|byte| *byte != frame.header().frame_seq as u8)
+                        {
+                            eprintln!("  [Pip] Rejected invalid frame payload");
+                            continue;
+                        }
                         let _ = pip_session.send(&HeavyPipAck {
                             ack_seq: seq,
                             bytes_received: bytes,
+                            data: payload.to_vec(),
                         });
                     }
                     let _ = pip_session.finish_send();
@@ -248,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    println!("Heavy Data Server is running and listening for client benchmarks.");
+    println!("Heavy Data Server is running for throughput demonstrations.");
     println!("Press Ctrl+C to stop.\n");
 
     loop {

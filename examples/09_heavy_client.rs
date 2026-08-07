@@ -1,7 +1,6 @@
 use agentio::{Agent, DirectoryMode, IdentitySource};
 use datapod::datapod;
 use std::env;
-use std::thread;
 use std::time::{Duration, Instant};
 
 #[datapod(name = "heavy.image_header.v1")]
@@ -10,6 +9,8 @@ pub struct HeavyImageHeader {
     pub width: u64,
     pub height: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.rpc_req.v1")]
@@ -21,6 +22,8 @@ pub struct HeavyRpcReq {
 pub struct HeavyRpcRes {
     pub checksum: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.query.v1")]
@@ -33,12 +36,16 @@ pub struct HeavyQuery {
 pub struct HeavyAnswer {
     pub chunk_index: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.upload_block.v1")]
 pub struct HeavyUploadBlock {
     pub block_index: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.upload_ack.v1")]
@@ -51,12 +58,16 @@ pub struct HeavyUploadAck {
 pub struct HeavyPipFrame {
     pub frame_seq: u64,
     pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "heavy.pip_ack.v1")]
 pub struct HeavyPipAck {
     pub ack_seq: u64,
     pub bytes_received: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -84,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_shm = args.iter().any(|a| a == "--use-shm");
 
     println!("============================================================");
-    println!("     agentio: Heavy Data Multi-Megabyte Client Benchmark   ");
+    println!("   agentio: Heavy Data Multi-Megabyte Throughput Demo     ");
     println!("============================================================");
     println!("Target Server: {}", server_address);
 
@@ -106,7 +117,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = client_agent.wait_for_direct_addresses(Duration::from_secs(5));
     println!("Client Endpoint ID: {}", client_agent.endpoint_id());
     println!("  [*] Initializing network transport...\n");
-    thread::sleep(Duration::from_secs(1));
 
     let overall_start = Instant::now();
 
@@ -123,7 +133,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(Some(sample)) = sub.recv_timeout(Duration::from_millis(100)) {
             let h = sample.header();
             received_count += 1;
-            total_bytes += h.payload_bytes;
+            let payload = sample.payload();
+            if payload.len() as u64 != h.payload_bytes
+                || payload
+                    .iter()
+                    .enumerate()
+                    .any(|(index, byte)| *byte != h.frame_id.wrapping_add(index as u64) as u8)
+            {
+                return Err("invalid image payload".into());
+            }
+            total_bytes += payload.len() as u64;
             println!(
                 "  -> Frame #{}: 4K Video ({}x{}), Size: {:.2} MB",
                 h.frame_id,
@@ -158,7 +177,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let elapsed = start_time.elapsed();
     let h = res.header();
-    let mb_received = h.payload_bytes as f64 / 1_000_000.0;
+    let payload = res.payload();
+    let checksum = blake3::hash(payload);
+    let checksum_u64 = u64::from_le_bytes(checksum.as_bytes()[0..8].try_into().unwrap());
+    assert_eq!(payload.len() as u64, req_size);
+    assert_eq!(h.payload_bytes, payload.len() as u64);
+    assert_eq!(h.checksum, checksum_u64);
+    let mb_received = payload.len() as f64 / 1_000_000.0;
     let speed_mbps = mb_received / elapsed.as_secs_f64();
     println!(
         "  -> Received RPC response: {:.2} MB (Checksum: {:x}) in {:.2}s ({:.2} MB/s)",
@@ -167,8 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed.as_secs_f64(),
         speed_mbps
     );
-    assert_eq!(h.payload_bytes, req_size);
-    println!("  [OK] Req/Res RPC benchmark passed.\n");
+    println!("  [OK] Req/Res RPC throughput passed.\n");
 
     // ------------------------------------------------------------------------
     // Pattern 3: Que / Ans (20 Chunks x 1 MB = 20 MB Total Streamed)
@@ -186,7 +210,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Ok(Some(hit)) = answers.next() {
         let h = hit.header();
         total_chunks += 1;
-        total_bytes += h.payload_bytes;
+        let payload = hit.payload();
+        assert_eq!(payload.len() as u64, h.payload_bytes);
+        assert!(payload.iter().all(|byte| *byte == h.chunk_index as u8));
+        total_bytes += payload.len() as u64;
         if total_chunks.is_multiple_of(5) {
             println!(
                 "  -> Progress: Received {} / 20 chunks ({:.2} MB)",
@@ -222,6 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         upload.send(&HeavyUploadBlock {
             block_index: b,
             payload_bytes: block_bytes,
+            data: vec![b as u8; block_bytes as usize],
         })?;
         if b % 10 == 0 {
             println!(
@@ -248,6 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         speed_mbps
     );
     assert_eq!(ack_h.total_blocks, total_blocks_to_send);
+    assert_eq!(ack_h.total_bytes, total_blocks_to_send * block_bytes);
 
     // ------------------------------------------------------------------------
     // Pattern 5: Pip Streaming (Bi-directional Heavy Stream 15 MB)
@@ -264,6 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pip.send(&HeavyPipFrame {
             frame_seq: f,
             payload_bytes: frame_bytes,
+            data: vec![f as u8; frame_bytes as usize],
         })?;
     }
     pip.finish_send()?;
@@ -272,6 +302,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Ok(Some(reply)) = pip.next() {
         ack_count += 1;
         let h = reply.header();
+        assert_eq!(reply.payload().len() as u64, h.bytes_received);
+        assert!(reply.payload().iter().all(|byte| *byte == h.ack_seq as u8));
         if ack_count.is_multiple_of(5) {
             println!(
                 "  -> Received Pipe Ack #{}: frame_seq={}",
@@ -294,7 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total_elapsed = overall_start.elapsed();
     println!("============================================================");
     println!(
-        "  HEAVY BENCHMARK COMPLETED SUCCESSFULLY IN {:.2} SECONDS!  ",
+        "  THROUGHPUT DEMO COMPLETED IN {:.2} SECONDS!  ",
         total_elapsed.as_secs_f64()
     );
     println!("============================================================");

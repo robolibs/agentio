@@ -1,4 +1,4 @@
-use agentio::Agent;
+use agentio::{Agent, IdentitySource};
 use datapod::datapod;
 
 #[datapod]
@@ -12,7 +12,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     // 1. Create a single-machine Agent instance with an ephemeral key
-    let agent = Agent::builder().name("agent-single").build()?;
+    let agent = Agent::builder()
+        .identity(IdentitySource::Random)
+        .name("agent-single")
+        .build()?;
 
     println!("Agent initialized!");
     println!("  Machine name: {}", agent.name());

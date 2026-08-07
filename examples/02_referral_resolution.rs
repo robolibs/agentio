@@ -1,4 +1,4 @@
-use agentio::{Agent, DirectoryMode};
+use agentio::{Agent, DirectoryMode, IdentitySource};
 use datapod::datapod;
 use std::thread;
 use std::time::Duration;
@@ -15,14 +15,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Machine 1: "agent-arm"
     let arm_agent = Agent::builder()
+        .identity(IdentitySource::Random)
         .name("agent-arm")
         .directory(DirectoryMode::Replicated)
+        .allow_any_peer()
         .build()?;
 
     // Machine 2: "agent-head", bootstrapped with Machine 1's EndpointId
     let head_agent = Agent::builder()
+        .identity(IdentitySource::Random)
         .name("agent-head")
         .directory(DirectoryMode::Replicated)
+        .allow_any_peer()
         .bootstrap([arm_agent.endpoint_id()])
         .build()?;
 
