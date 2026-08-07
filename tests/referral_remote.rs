@@ -1,4 +1,4 @@
-use agentio::{Agent, DatapodMsg, RESOLUTION_TOPIC};
+use agentio::{Agent, DatapodMsg, DirectoryMode, RESOLUTION_TOPIC};
 use datapod::datapod;
 use peerbus::SecretKey;
 use std::time::Duration;
@@ -24,7 +24,7 @@ fn resolves_and_transfers_over_forced_quic() {
     let mut publisher = server.publish::<RemoteSample>("/remote/sample").unwrap();
     let client = Agent::builder()
         .identity(client_key)
-        .bootstrap([server_id])
+        .directory(DirectoryMode::FrontDoor(server_id))
         .allow_peer(server_id)
         .skip_shm()
         .build()

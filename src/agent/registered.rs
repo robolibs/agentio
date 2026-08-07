@@ -5,6 +5,7 @@ use crate::directory::TopicEntry;
 
 use super::core::{AgentInner, withdraw_owned_entry};
 
+/// A hosted peerbus handle that withdraws its signed directory record on drop.
 pub struct Registered<H> {
     handle: H,
     entry: TopicEntry,

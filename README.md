@@ -1,69 +1,126 @@
 # agentio
 
-`agentio` is the agent composition and whole IO interface crate on top of [`peerbus`](../peerbus).
+`agentio` is a Rust library for composing authenticated `peerbus` endpoints by
+topic name. One `Agent` owns one `peerbus::Node`, one Ed25519 identity, a local
+directory, and its control-plane workers. A multi-machine composition consists
+of several Agents that exchange signed directory records.
 
-Every agent uses `agentio` to handle identity/key management (`did:key`), machine directory tracking, topic referral resolution, participant namespacing, and multi-machine agent composition.
+## Model
 
-## Core Concepts
+- A **Machine** is one endpoint identity and its `peerbus::Node`.
+- An **Agent** is the owning handle for that Machine's IO and directory state.
+- A **topic** is a normalized absolute path such as `/perception/pose`.
+- `qualify_participant_topic` and `subscribe_in` provide local topic-prefix
+  convenience. There is no participant registry or participant discovery.
 
-- **Machine**: One `peerbus::Node` bound to one ed25519 key = one iroh `EndpointId` = one shared memory arena on one host.
-- **Agent**: A logical set of Machines that belong together (e.g. robot components, compute nodes, server/edge PCs).
-- **Participant**: A logical node name (e.g. `camera`, `planner`) hosted on a Machine.
-- **Topic**: A `/`-namespaced path (e.g. `/perception/pose`).
+Each hosted exchange is recorded with its topic, exchange family, request and
+response type hashes, owner endpoint, revision, lease expiry, machine name, and
+owner signature. Received announcements and snapshots are verified before
+insertion. Older revisions, expired records, invalid signatures, type
+mismatches, and competing live owners are rejected. Hosted records are renewed;
+dropping the returned `Registered` publisher/server handle sends a signed
+withdrawal. A missed announcement can be recovered with `reconcile_now` or the
+periodic reconciliation worker.
 
-## Referral Resolution
+## Membership and authorization
 
-`agentio` resolves topics across an Agent composition via **referral**, not relay:
-1. When Machine A requests a topic from Agent B, it dials Agent B's referral endpoint (`__agentio_resolve`) via peerbus req/res.
-2. Agent B looks up the topic in its directory and returns the owner `(type_hash, EndpointId = Y)`.
-3. Machine A subscribes/dials `Y` directly via `peerbus.subscriber(Y, topic)`. If co-located on the same host, peerbus uses zero-copy shared memory; otherwise it streams over iroh QUIC.
+Discovery and authorization are separate:
 
-## Usage Example
+- `bootstrap([...])` configures outbound directory seeds only.
+- `allow_peer(id)` and `allow_peers([...])` configure inbound transport access.
+- `allow_any_peer()` explicitly opts out of the deny-by-default allowlist.
+- `DirectoryMode::Replicated` reconciles every configured seed.
+- `DirectoryMode::FrontDoor(id)` uses one directory authority. The front-door
+  ID is not automatically authorized for inbound transport.
+
+For production, exchange endpoint IDs through a trusted channel and use
+explicit allowlists. `allow_any_peer` is appropriate only for a deliberately
+permissive trust boundary. An ALPN identifies a protocol; it is not a secret or
+an authorization mechanism.
+
+## Resolution and transport
+
+A typed client first checks its verified local directory and can query a seed's
+reserved `__agentio_resolve` req/res service. It validates the returned topic,
+exchange family, and type hashes before dialing the owner directly. `by_id`
+bypasses directory resolution but not peerbus transport authorization.
+
+Peerbus can use shared memory for co-located endpoints and iroh QUIC for remote
+endpoints. `skip_shm()` forces QUIC; `no_relay()` disables relay fallback.
+`wait_for_direct_addresses` provides bounded address readiness for remote
+setups.
+
+## Identities
+
+`IdentitySource::Random` creates a non-persistent identity. Named, default, DID,
+and explicit-file sources persist 32-byte keys with owner-only Unix permissions
+and fail on malformed or insecure existing files. DID-index copy failures are
+returned to the caller. A human-readable name is never converted into private
+key material. See
+[`docs/migrations/identity-derived-name.md`](docs/migrations/identity-derived-name.md)
+when migrating from the removed name-derived API.
+
+## Minimal example
 
 ```rust
-use agentio::{Agent, DirectoryMode};
+use agentio::{Agent, IdentitySource};
 use datapod::datapod;
+use std::time::Duration;
 
 #[datapod]
 struct Pose {
-    pub x: f32,
-    pub y: f32,
-    pub yaw: f32,
+    x: f32,
+    y: f32,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent = Agent::builder()
-        .name("agent-1")
-        .directory(DirectoryMode::Replicated)
+        .identity(IdentitySource::Random)
+        .name("local")
         .build()?;
+    let mut publisher = agent.publish::<Pose>("/pose")?;
+    let mut subscriber = agent.subscribe::<Pose>("/pose")?;
 
-    // Publish topic
-    let mut pubr = agent.publish::<Pose>("/perception/pose")?;
-
-    // Subscribe by name (resolved within the Agent)
-    let mut sub = agent.subscribe::<Pose>("/perception/pose")?;
-
-    pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 0.5 })?;
-
-    // Direct escape hatch by EndpointId
-    let _direct_sub = agent.by_id(agent.endpoint_id())?.subscribe::<Pose>("/perception/pose")?;
-
+    publisher.send(&Pose { x: 1.0, y: 2.0 })?;
+    let sample = subscriber
+        .recv_timeout(Duration::from_secs(1))?
+        .ok_or("pose timed out")?;
+    assert_eq!(sample.header().x, 1.0);
     Ok(())
 }
 ```
 
-## Examples
+## Lifecycle and health
 
-Run the provided examples:
+`Agent` clones share one inner node. Dropping a non-final clone changes nothing;
+dropping the final clone signals and joins both control workers before the node
+is released. Publisher and server wrappers withdraw their records on drop while
+the Agent remains live.
+
+`directory_health()` snapshots announcement successes/failures, resolver
+errors, rejected records, last successful reconciliation, stale seed count,
+conflicts, and pending announcements. Configuration, signature, expiry,
+ownership, exchange, type, batch, and stale-revision failures are typed `Error`
+variants.
+
+## Commands
+
+The Makefile is the supported command surface:
 
 ```bash
-cargo run --example 01_single_machine
-cargo run --example 02_referral_resolution
-cargo run --example 03_req_res_service
-cargo run --example 04_by_id_escape
-cargo run --example 05_all_exchanges
-cargo run --example 06_server_all
-cargo run --example 07_client_all -- <SERVER_DID_KEY> [--use-shm]
-cargo run --example 08_heavy_server
-cargo run --example 09_heavy_client -- <SERVER_DID_KEY> [--use-shm]
+make run
+make run EXAMPLE=05_all_exchanges
+make run EXAMPLE=07_client_all ARGS='<SERVER_DID_KEY>'
+make integration
+make remote-test
+make examples-smoke
+make verify
 ```
+
+Examples 06/07 are the two-process exchange demos. Examples 08/09 are
+throughput demos that measure actual received payload bytes and validate their
+content; they are not repeatable statistical benchmarks.
+
+`agentio` is library-only. CI builds, tests, lints, and documents the library;
+it does not package a nonexistent application binary. Source releases remain a
+manual maintainer operation.

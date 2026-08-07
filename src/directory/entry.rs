@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 pub const DIRECTORY_PROTOCOL_VERSION: u16 = 1;
 pub const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(30);
 
+/// The peerbus exchange family hosted at a topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ExchangeKind {
     PubSub,
@@ -17,6 +18,7 @@ pub enum ExchangeKind {
     Pip,
 }
 
+/// Input used to create and sign a current directory record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicRecordSpec {
     topic: String,
@@ -67,6 +69,7 @@ struct TopicRecordBody {
     machine_name: Option<String>,
 }
 
+/// An owner-signed, leased topic record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopicEntry {
     body: TopicRecordBody,
@@ -184,6 +187,7 @@ struct WithdrawalBody {
     revision: u64,
 }
 
+/// An owner-signed request to remove a hosted topic record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopicWithdrawal {
     body: WithdrawalBody,

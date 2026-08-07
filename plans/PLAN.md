@@ -341,13 +341,13 @@ After the operator establishes a baseline:
 | 1 | Restore clean build and automation | P1 | M | 0 | DONE |
 | 2 | Add characterization test harness | P1 | M | 1 | DONE |
 | 3 | Fix resolver lifecycle and errors | P1 | M | 2 | DONE |
-| 4 | Separate membership from ACLs | P1 | M | 2 | IN PROGRESS |
+| 4 | Separate membership from ACLs | P1 | M | 2 | DONE |
 | 5 | Authenticate directory records | P1 | L | 3, 4 | DONE |
 | 6 | Reconcile and expire directory state | P1 | L | 5 | DONE |
 | 7 | Remove insecure derived identities | P1 | M | 2 | DONE |
 | 8 | Fix naming and participant contract | P2 | M | 6 | DONE |
 | 9 | Repair examples and benchmarks | P2 | M | 4, 6 | DONE |
-| 10 | Align documentation and release model | P2 | M | 1-9 | TODO |
+| 10 | Align documentation and release model | P2 | M | 1-9 | DONE |
 | 11 | Run final security and release gates | P1 | M | 1-10 | TODO |
 
 ## Phase 0: Establish the baseline and decisions

@@ -9,6 +9,7 @@ endif
 TOP_DIR := $(CURDIR)
 CARGO := cargo
 EXAMPLE ?= 01_single_machine
+ARGS ?=
 PREFIX ?= $(HOME)/.local
 
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
@@ -31,7 +32,7 @@ compile:
 c: compile
 
 run:
-	@$(CARGO) run --example $(EXAMPLE)
+	@$(CARGO) run --example $(EXAMPLE) -- $(ARGS)
 
 r: run
 
@@ -96,7 +97,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build        Build the library"
 	@echo "  compile      Clean and rebuild"
-	@echo "  run          Run a development example"
+	@echo "  run          Run an example (EXAMPLE=name ARGS='...')"
 	@echo "  test         Run all tests"
 	@echo "  integration  Run integration tests"
 	@echo "  remote-test  Run the forced-QUIC referral test"

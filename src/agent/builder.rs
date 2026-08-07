@@ -141,6 +141,7 @@ impl AgentBuilder {
 
         let mut builder = Node::builder().secret_key(secret.clone());
         if self.allow_any_peer {
+            tracing::warn!("inbound peer allowlist disabled");
             builder = builder.allow_any_peer();
         } else {
             builder = builder.allow_peer(endpoint_id);

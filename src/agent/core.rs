@@ -165,6 +165,7 @@ impl Agent {
         self.inner.health.snapshot()
     }
 
+    /// Fetch bounded signed snapshots from configured directory targets.
     pub fn reconcile_now(&self) -> Result<usize> {
         reconcile_directory(
             &self.inner.node,
@@ -177,6 +178,7 @@ impl Agent {
         )
     }
 
+    /// Renew every locally hosted signed record and return the renewed count.
     pub fn renew_now(&self) -> usize {
         renew_hosted_records(&ControlLoopConfig {
             node: self.inner.node.clone(),
