@@ -13,7 +13,9 @@ pub mod naming;
 pub use agent::{Agent, AgentBuilder, DirectoryMode, TryIntoBootstrapPeer};
 pub use authbox;
 pub use authbox::did;
-pub use directory::{Directory, RESOLUTION_TOPIC, ResolveRequest, ResolveResponse, TopicEntry};
+pub use directory::{
+    Directory, DirectoryHealth, RESOLUTION_TOPIC, ResolveRequest, ResolveResponse, TopicEntry,
+};
 pub use error::{Error, Result};
 pub use escape::ById;
 pub use identity::{

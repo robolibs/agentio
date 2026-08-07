@@ -2,10 +2,10 @@ use peerbus::{DatapodMsg, EndpointId, Node};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use super::core::{Agent, AgentInner, run_resolution_loop};
+use super::core::{Agent, AgentInner, ResolverWorker, run_resolution_loop};
 use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
-use crate::directory::{Directory, RESOLUTION_TOPIC};
-use crate::error::Result;
+use crate::directory::{ControlPlaneHealth, Directory, RESOLUTION_TOPIC};
+use crate::error::{Error, Result};
 use crate::identity::{IdentitySource, resolve_identity};
 use crate::naming::NameTable;
 
@@ -15,6 +15,8 @@ pub struct AgentBuilder {
     pub(crate) identity_source: IdentitySource,
     pub(crate) directory_mode: DirectoryMode,
     pub(crate) bootstrap_peers: Vec<EndpointId>,
+    pub(crate) allowed_peers: Vec<EndpointId>,
+    pub(crate) configuration_errors: Vec<String>,
     pub(crate) allow_any_peer: bool,
     pub(crate) no_relay: bool,
     pub(crate) skip_shm: bool,
@@ -27,6 +29,8 @@ impl AgentBuilder {
             identity_source: IdentitySource::Ephemeral,
             directory_mode: DirectoryMode::Replicated,
             bootstrap_peers: Vec::new(),
+            allowed_peers: Vec::new(),
+            configuration_errors: Vec::new(),
             allow_any_peer: false,
             no_relay: false,
             skip_shm: false,
@@ -68,12 +72,39 @@ impl AgentBuilder {
         I: IntoIterator<Item = P>,
         P: TryIntoBootstrapPeer,
     {
-        for p in peers {
-            if let Ok(peer) = p.try_into_bootstrap_peer()
-                && !self.bootstrap_peers.contains(&peer)
-            {
-                self.bootstrap_peers.push(peer);
+        for peer in peers {
+            match peer.try_into_bootstrap_peer() {
+                Ok(peer) if !self.bootstrap_peers.contains(&peer) => {
+                    self.bootstrap_peers.push(peer);
+                }
+                Ok(_) => {}
+                Err(error) => self.configuration_errors.push(error.to_string()),
             }
+        }
+        self
+    }
+
+    /// Permit one peer to open inbound transport connections to this Agent.
+    pub fn allow_peer<P>(mut self, peer: P) -> Self
+    where
+        P: TryIntoBootstrapPeer,
+    {
+        match peer.try_into_bootstrap_peer() {
+            Ok(peer) if !self.allowed_peers.contains(&peer) => self.allowed_peers.push(peer),
+            Ok(_) => {}
+            Err(error) => self.configuration_errors.push(error.to_string()),
+        }
+        self
+    }
+
+    /// Permit multiple peers to open inbound transport connections.
+    pub fn allow_peers<I, P>(mut self, peers: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: TryIntoBootstrapPeer,
+    {
+        for peer in peers {
+            self = self.allow_peer(peer);
         }
         self
     }
@@ -98,16 +129,20 @@ impl AgentBuilder {
 
     /// Build the `Agent` machine instance.
     pub fn build(self) -> Result<Agent> {
+        if !self.configuration_errors.is_empty() {
+            return Err(Error::Configuration(self.configuration_errors.join("; ")));
+        }
+
         let secret = resolve_identity(&self.identity_source)?;
         let endpoint_id = secret.public();
 
-        let mut builder = Node::builder().secret_key(secret);
+        let mut builder = Node::builder().secret_key(secret.clone());
         if self.allow_any_peer {
             builder = builder.allow_any_peer();
         } else {
             builder = builder.allow_peer(endpoint_id);
         }
-        for &peer in &self.bootstrap_peers {
+        for &peer in &self.allowed_peers {
             builder = builder.allow_peer(peer);
         }
 
@@ -130,13 +165,16 @@ impl AgentBuilder {
 
         name_table.register(&machine_name, endpoint_id);
 
+        let server = node.req_server::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC)?;
+        let health = Arc::new(ControlPlaneHealth::default());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        if let Ok(server) = node.req_server::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC) {
-            let dir_clone = directory.clone();
-            std::thread::spawn(move || {
-                run_resolution_loop(server, dir_clone, shutdown_rx);
-            });
-        }
+        let worker_health = health.clone();
+        let dir_clone = directory.clone();
+        let join_handle = std::thread::Builder::new()
+            .name(format!("agentio-resolver-{machine_name}"))
+            .spawn(move || {
+                run_resolution_loop(server, dir_clone, worker_health, shutdown_rx);
+            })?;
 
         let inner = Arc::new(AgentInner {
             node,
@@ -146,7 +184,15 @@ impl AgentBuilder {
             endpoint_id,
             directory_mode: self.directory_mode,
             bootstrap_peers: self.bootstrap_peers,
-            _shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            allowed_peers: self.allowed_peers,
+            allow_any_peer: self.allow_any_peer,
+            no_relay: self.no_relay,
+            skip_shm: self.skip_shm,
+            health,
+            resolver_worker: Mutex::new(Some(ResolverWorker {
+                shutdown_tx,
+                join_handle,
+            })),
         });
 
         Ok(Agent { inner })
@@ -156,5 +202,20 @@ impl AgentBuilder {
 impl Default for AgentBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::IdentitySource;
+
+    #[test]
+    fn invalid_bootstrap_is_reported() {
+        let result = Agent::builder()
+            .identity(IdentitySource::Random)
+            .bootstrap(["not-an-endpoint"])
+            .build();
+        assert!(matches!(result, Err(Error::Configuration(_))));
     }
 }

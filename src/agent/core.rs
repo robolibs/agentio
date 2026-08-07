@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::directory::{
-    Directory, RESOLUTION_TOPIC, RESOLUTION_TYPE_HASH, ResolveRequest, ResolveResponse, TopicEntry,
+    ControlPlaneHealth, Directory, DirectoryHealth, RESOLUTION_TOPIC, RESOLUTION_TYPE_HASH,
+    ResolveRequest, ResolveResponse, TopicEntry,
 };
 use crate::error::{Error, Result};
 use crate::escape::ById;
@@ -24,7 +25,32 @@ pub(crate) struct AgentInner {
     pub(crate) endpoint_id: EndpointId,
     pub(crate) directory_mode: DirectoryMode,
     pub(crate) bootstrap_peers: Vec<EndpointId>,
-    pub(crate) _shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub(crate) allowed_peers: Vec<EndpointId>,
+    pub(crate) allow_any_peer: bool,
+    pub(crate) no_relay: bool,
+    pub(crate) skip_shm: bool,
+    pub(crate) health: Arc<ControlPlaneHealth>,
+    pub(crate) resolver_worker: Mutex<Option<ResolverWorker>>,
+}
+
+pub(crate) struct ResolverWorker {
+    pub(crate) shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    pub(crate) join_handle: std::thread::JoinHandle<()>,
+}
+
+impl Drop for AgentInner {
+    fn drop(&mut self) {
+        let worker = match self.resolver_worker.get_mut() {
+            Ok(worker) => worker.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(worker) = worker {
+            let _ = worker.shutdown_tx.send(());
+            if worker.join_handle.join().is_err() {
+                tracing::error!("agentio resolver worker panicked during shutdown");
+            }
+        }
+    }
 }
 
 /// Main `Agent` composition and IO handle on top of `peerbus`.
@@ -84,6 +110,41 @@ impl Agent {
     /// Access the `NameTable`.
     pub fn name_table(&self) -> &NameTable {
         &self.inner.name_table
+    }
+
+    /// Return the outbound directory seeds configured for this Agent.
+    pub fn bootstrap_peers(&self) -> &[EndpointId] {
+        &self.inner.bootstrap_peers
+    }
+
+    /// Return the peers authorized to open inbound connections.
+    pub fn allowed_peers(&self) -> &[EndpointId] {
+        &self.inner.allowed_peers
+    }
+
+    /// Return the configured directory mode.
+    pub fn directory_mode(&self) -> &DirectoryMode {
+        &self.inner.directory_mode
+    }
+
+    /// Return whether inbound connections from any peer are permitted.
+    pub fn allows_any_peer(&self) -> bool {
+        self.inner.allow_any_peer
+    }
+
+    /// Return whether relay fallback is disabled.
+    pub fn relay_disabled(&self) -> bool {
+        self.inner.no_relay
+    }
+
+    /// Return whether shared-memory transport is disabled.
+    pub fn shared_memory_disabled(&self) -> bool {
+        self.inner.skip_shm
+    }
+
+    /// Snapshot observable directory control-plane counters.
+    pub fn directory_health(&self) -> DirectoryHealth {
+        self.inner.health.snapshot()
     }
 
     /// Create an escape hatch handle to call peerbus directly on a specific peer ID without directory resolution.
@@ -352,6 +413,7 @@ impl Agent {
             entries: vec![entry.clone()],
         };
         let Ok(req_bytes) = req.to_bytes() else {
+            self.inner.health.announcement_failed();
             return;
         };
         let req_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, req_bytes);
@@ -370,7 +432,15 @@ impl Agent {
                 .node
                 .req_client::<DatapodMsg, DatapodMsg>(target_id, RESOLUTION_TOPIC)
             {
-                let _ = client.call(&req_msg);
+                match client.call(&req_msg) {
+                    Ok(_) => self.inner.health.announcement_succeeded(),
+                    Err(error) => {
+                        self.inner.health.announcement_failed();
+                        tracing::warn!(%target_id, %error, "directory announcement failed");
+                    }
+                }
+            } else {
+                self.inner.health.announcement_failed();
             }
         }
     }
@@ -379,11 +449,13 @@ impl Agent {
 pub(crate) fn run_resolution_loop(
     mut server: ReqServer<DatapodMsg, DatapodMsg>,
     directory: Directory,
+    health: Arc<ControlPlaneHealth>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     loop {
-        if shutdown_rx.try_recv().is_ok() {
-            break;
+        match shutdown_rx.try_recv() {
+            Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
         }
         match server.recv_timeout(Duration::from_millis(50)) {
             Ok(Some((sample, reply))) => {
@@ -408,12 +480,22 @@ pub(crate) fn run_resolution_loop(
                     };
                     if let Ok(resp_bytes) = resp.to_bytes() {
                         let resp_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, resp_bytes);
-                        let _ = reply.respond(&resp_msg);
+                        if let Err(error) = reply.respond(&resp_msg) {
+                            health.resolver_error();
+                            tracing::warn!(%error, "directory response failed");
+                        }
+                    } else {
+                        health.resolver_error();
                     }
+                } else {
+                    health.reject_record();
                 }
             }
             Ok(None) => {}
-            Err(_) => {}
+            Err(error) => {
+                health.resolver_error();
+                tracing::warn!(%error, "directory resolver receive failed");
+            }
         }
     }
 }

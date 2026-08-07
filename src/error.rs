@@ -12,11 +12,17 @@ pub enum Error {
     #[error("identity error: {0}")]
     Identity(String),
 
+    #[error("configuration error: {0}")]
+    Configuration(String),
+
     #[error("did:key error: {0}")]
     DidKey(String),
 
     #[error("resolution failed: {0}")]
     ResolutionFailed(String),
+
+    #[error("control-plane error: {0}")]
+    ControlPlane(String),
 
     #[error("invalid topic path '{topic}': {reason}")]
     InvalidTopic { topic: String, reason: String },

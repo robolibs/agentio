@@ -17,7 +17,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
+.PHONY: build b compile c run r test t integration remote-test check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
 
 build:
 	@$(CARGO) build --lib
@@ -39,6 +39,12 @@ test:
 	@$(CARGO) test --all-targets
 
 t: test
+
+integration:
+	@$(CARGO) test --tests
+
+remote-test:
+	@$(CARGO) test --test referral_remote
 
 check:
 	@$(CARGO) check --all-targets
@@ -89,6 +95,8 @@ help:
 	@echo "  compile      Clean and rebuild"
 	@echo "  run          Run a development example"
 	@echo "  test         Run all tests"
+	@echo "  integration  Run integration tests"
+	@echo "  remote-test  Run the forced-QUIC referral test"
 	@echo "  check        Run cargo check on all targets"
 	@echo "  check-all    Run cargo check on all targets/all features"
 	@echo "  test-all     Run cargo test on all targets/all features"
