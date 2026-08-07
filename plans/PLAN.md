@@ -339,8 +339,8 @@ After the operator establishes a baseline:
 |---|---|---:|---:|---|---|
 | 0 | Establish baseline and decisions | P1 | S | none | DONE |
 | 1 | Restore clean build and automation | P1 | M | 0 | DONE |
-| 2 | Add characterization test harness | P1 | M | 1 | IN PROGRESS |
-| 3 | Fix resolver lifecycle and errors | P1 | M | 2 | IN PROGRESS |
+| 2 | Add characterization test harness | P1 | M | 1 | DONE |
+| 3 | Fix resolver lifecycle and errors | P1 | M | 2 | DONE |
 | 4 | Separate membership from ACLs | P1 | M | 2 | IN PROGRESS |
 | 5 | Authenticate directory records | P1 | L | 3, 4 | DONE |
 | 6 | Reconcile and expire directory state | P1 | L | 5 | DONE |

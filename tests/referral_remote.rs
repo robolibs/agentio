@@ -1,4 +1,4 @@
-use agentio::Agent;
+use agentio::{Agent, DatapodMsg, RESOLUTION_TOPIC};
 use datapod::datapod;
 use peerbus::SecretKey;
 use std::time::Duration;
@@ -37,6 +37,14 @@ fn resolves_and_transfers_over_forced_quic() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
 
+    let mut control = client
+        .by_id(server_id)
+        .unwrap()
+        .req_client::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC)
+        .unwrap();
+    let malformed = DatapodMsg::new(0, vec![0xff, 0xff]);
+    let _ = control.call(&malformed);
+
     assert_eq!(client.reconcile_now().unwrap(), 1);
     let mut subscriber = client.subscribe::<RemoteSample>("/remote/sample").unwrap();
 
@@ -71,4 +79,44 @@ fn resolves_and_transfers_over_forced_quic() {
             .sequence,
         84
     );
+}
+
+#[test]
+fn unlisted_forced_quic_client_is_rejected() {
+    let server_key = SecretKey::generate();
+    let client_key = SecretKey::generate();
+    let server_id = server_key.public();
+    let server = Agent::builder()
+        .identity(server_key)
+        .skip_shm()
+        .build()
+        .unwrap();
+    let client = Agent::builder()
+        .identity(client_key)
+        .allow_peer(server_id)
+        .skip_shm()
+        .build()
+        .unwrap();
+    server
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    client
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    let mut publisher = server.publish::<RemoteSample>("/remote/rejected").unwrap();
+    let mut subscriber = client
+        .by_id(server_id)
+        .unwrap()
+        .subscribe::<RemoteSample>("/remote/rejected")
+        .unwrap();
+
+    for sequence in 0..4 {
+        publisher.send(&RemoteSample { sequence }).unwrap();
+        assert!(
+            subscriber
+                .recv_timeout(Duration::from_millis(250))
+                .unwrap()
+                .is_none()
+        );
+    }
 }

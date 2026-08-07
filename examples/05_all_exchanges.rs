@@ -1,4 +1,4 @@
-use agentio::{Agent, DirectoryMode};
+use agentio::{Agent, DirectoryMode, IdentitySource};
 use datapod::datapod;
 use std::thread;
 use std::time::Duration;
@@ -66,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Server Agent
     let server_agent = Agent::builder()
+        .identity(IdentitySource::Random)
         .name("server-agent")
         .directory(DirectoryMode::Replicated)
         .allow_any_peer()
@@ -73,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Client Agent (bootstrapped with Server Agent's EndpointId)
     let client_agent = Agent::builder()
+        .identity(IdentitySource::Random)
         .name("client-agent")
         .directory(DirectoryMode::Replicated)
         .allow_any_peer()
@@ -81,7 +83,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = server_agent.wait_for_direct_addresses(Duration::from_secs(1));
     let _ = client_agent.wait_for_direct_addresses(Duration::from_secs(1));
-    thread::sleep(Duration::from_millis(200));
 
     println!(
         "Server Agent: {} ({})",
@@ -99,19 +100,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------------
     println!("[Pattern 1/5] Pub / Sub (/telemetry)");
     let mut pubr = server_agent.publish::<Telemetry>("/telemetry")?;
-    thread::sleep(Duration::from_millis(50));
     let mut sub = client_agent.subscribe::<Telemetry>("/telemetry")?;
 
-    pubr.send(&Telemetry {
-        seq: 101,
-        val: 98.6,
-    })?;
-    thread::sleep(Duration::from_millis(50));
-    if let Some(sample) = sub.take()? {
-        let t = sample.header();
-        println!("  -> Received Telemetry: seq={}, val={}", t.seq, t.val);
-        assert_eq!(t.seq, 101);
+    let mut received = None;
+    for _ in 0..20 {
+        pubr.send(&Telemetry {
+            seq: 101,
+            val: 98.6,
+        })?;
+        if let Some(sample) = sub.recv_timeout(Duration::from_millis(250))? {
+            received = Some(sample);
+            break;
+        }
     }
+    let sample = received.ok_or("Pub/Sub timed out")?;
+    let telemetry = sample.header();
+    println!(
+        "  -> Received Telemetry: seq={}, val={}",
+        telemetry.seq, telemetry.val
+    );
+    assert_eq!(telemetry.seq, 101);
     println!("  [OK] Pub/Sub test passed.\n");
 
     // ------------------------------------------------------------------------
@@ -119,7 +127,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------------
     println!("[Pattern 2/5] Req / Res (/service/add)");
     let mut req_srv = server_agent.req_server::<MathReq, MathRes>("/service/add")?;
-    thread::sleep(Duration::from_millis(50));
     let mut req_cli = client_agent.req_client::<MathReq, MathRes>("/service/add")?;
 
     let srv_handle_req = thread::spawn(move || -> Result<(), String> {
@@ -151,7 +158,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------------
     println!("[Pattern 3/5] Que / Ans (/query/range)");
     let mut que_srv = server_agent.que_server::<RangeQuery, RangeHit>("/query/range")?;
-    thread::sleep(Duration::from_millis(50));
     let mut que_cli = client_agent.que_client::<RangeQuery, RangeHit>("/query/range")?;
 
     let srv_handle_que = thread::spawn(move || -> Result<(), String> {
@@ -194,7 +200,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------------
     println!("[Pattern 4/5] Put / Ack (/upload/blocks)");
     let mut put_srv = server_agent.put_server::<DataBlock, UploadResult>("/upload/blocks")?;
-    thread::sleep(Duration::from_millis(50));
     let mut put_cli = client_agent.put_client::<DataBlock, UploadResult>("/upload/blocks")?;
 
     let srv_handle_put = thread::spawn(move || -> Result<(), String> {
@@ -238,7 +243,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------------
     println!("[Pattern 5/5] Pip (/stream/audio)");
     let mut pip_srv = server_agent.pip_server::<AudioChunk, AudioFeedback>("/stream/audio")?;
-    thread::sleep(Duration::from_millis(50));
     let mut pip_cli = client_agent.pip_client::<AudioChunk, AudioFeedback>("/stream/audio")?;
 
     let srv_handle_pip = thread::spawn(move || -> Result<(), String> {

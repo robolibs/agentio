@@ -36,3 +36,18 @@ fn bootstrap_and_inbound_allowlist_are_independent() {
     assert_eq!(agent.allowed_peers(), &[allowed]);
     assert!(!agent.allows_any_peer());
 }
+
+#[test]
+fn failed_announcement_is_observable() {
+    let unavailable = SecretKey::generate().public();
+    let agent = Agent::builder()
+        .identity(IdentitySource::Random)
+        .bootstrap([unavailable])
+        .allow_any_peer()
+        .build()
+        .unwrap();
+    let _publisher = agent
+        .publish::<peerbus::DatapodMsg>("/unreachable")
+        .unwrap();
+    assert!(agent.directory_health().announcement_failures > 0);
+}

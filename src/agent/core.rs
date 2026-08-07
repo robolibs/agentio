@@ -492,32 +492,45 @@ impl Agent {
             DirectoryMode::Replicated => self.inner.bootstrap_peers.clone(),
         };
 
-        for target_id in &targets {
-            if let Ok(mut client) = self
-                .inner
-                .node
-                .req_client::<DatapodMsg, DatapodMsg>(*target_id, RESOLUTION_TOPIC)
-            {
-                let request = ResolveRequest::Query {
-                    topic: topic.to_string(),
-                    exchange,
-                    request_type_hash,
-                    response_type_hash,
-                };
-                if let Ok(request_bytes) = request.to_bytes() {
-                    let message = DatapodMsg::new(RESOLUTION_TYPE_HASH, request_bytes);
-                    if let Ok(sample) = client.call(&message)
-                        && let Ok(ResolveResponse::QueryResult {
-                            found: true,
-                            entry: Some(entry),
-                        }) = ResolveResponse::from_bytes(sample.payload())
-                    {
-                        entry.validate_exchange(exchange, request_type_hash, response_type_hash)?;
-                        self.inner.directory.register(entry.clone())?;
-                        return Ok(entry);
+        let started = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
+        while !targets.is_empty() && started.elapsed() < timeout {
+            for target_id in &targets {
+                if let Ok(mut client) = self
+                    .inner
+                    .node
+                    .req_client::<DatapodMsg, DatapodMsg>(*target_id, RESOLUTION_TOPIC)
+                {
+                    let request = ResolveRequest::Query {
+                        topic: topic.to_string(),
+                        exchange,
+                        request_type_hash,
+                        response_type_hash,
+                    };
+                    if let Ok(request_bytes) = request.to_bytes() {
+                        let message = DatapodMsg::new(RESOLUTION_TYPE_HASH, request_bytes);
+                        if let Ok(sample) = client.call(&message)
+                            && let Ok(ResolveResponse::QueryResult {
+                                found: true,
+                                entry: Some(entry),
+                            }) = ResolveResponse::from_bytes(sample.payload())
+                        {
+                            if entry.topic() != topic {
+                                self.inner.health.reject_record();
+                                continue;
+                            }
+                            entry.validate_exchange(
+                                exchange,
+                                request_type_hash,
+                                response_type_hash,
+                            )?;
+                            self.inner.directory.register(entry.clone())?;
+                            return Ok(entry);
+                        }
                     }
                 }
             }
+            std::thread::yield_now();
         }
 
         Err(Error::ResolutionFailed(format!(
@@ -797,8 +810,8 @@ pub(crate) fn run_resolution_loop(
         match server.recv_timeout(Duration::from_millis(50)) {
             Ok(Some((sample, reply))) => {
                 let req_bytes = sample.payload();
-                if let Ok(req) = ResolveRequest::from_bytes(req_bytes) {
-                    let resp = match req {
+                let response = match ResolveRequest::from_bytes(req_bytes) {
+                    Ok(req) => match req {
                         ResolveRequest::Query {
                             topic,
                             exchange,
@@ -861,9 +874,17 @@ pub(crate) fn run_resolution_loop(
                                 ResolveResponse::Withdrawn { count }
                             }
                         }
-                    };
+                    },
+                    Err(error) => {
+                        health.reject_record();
+                        ResolveResponse::Rejected {
+                            message: error.to_string(),
+                        }
+                    }
+                };
+                {
                     name_table.sync_from_entries(&directory.all_entries());
-                    if let Ok(resp_bytes) = resp.to_bytes() {
+                    if let Ok(resp_bytes) = response.to_bytes() {
                         let resp_msg = DatapodMsg::new(RESOLUTION_TYPE_HASH, resp_bytes);
                         if let Err(error) = reply.respond(&resp_msg) {
                             health.resolver_error();
@@ -872,8 +893,6 @@ pub(crate) fn run_resolution_loop(
                     } else {
                         health.resolver_error();
                     }
-                } else {
-                    health.reject_record();
                 }
             }
             Ok(None) => {}
