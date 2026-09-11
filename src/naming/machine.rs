@@ -12,6 +12,7 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// Create machine metadata for an endpoint and optional display name.
     pub fn new(endpoint_id: EndpointId, name: Option<impl Into<String>>) -> Self {
         Self {
             endpoint_id,
@@ -19,6 +20,7 @@ impl Machine {
         }
     }
 
+    /// Return this machine endpoint as a canonical `did:key` value.
     pub fn did_key(&self) -> Result<String> {
         did_key::endpoint_to_did_key(&self.endpoint_id)
     }

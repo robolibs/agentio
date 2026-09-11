@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "f4b31c6155a294a10f5902167afae6f0b78aa528" }
-authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.0" }
+authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.1" }
 datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
 serde = { version = "1.0", features = ["derive"] }
 postcard = { version = "1.0", default-features = false, features = ["use-std"] }
@@ -22,6 +22,7 @@ thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
+agentio-example-messages = { path = "examples/shared_types" }
 blake3 = { version = "1", default-features = false }
 tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

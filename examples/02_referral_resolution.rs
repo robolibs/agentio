@@ -1,6 +1,5 @@
 use agentio::{Agent, DirectoryMode, IdentitySource};
 use datapod::datapod;
-use std::thread;
 use std::time::Duration;
 
 #[datapod]
@@ -44,8 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // "agent-arm" publishes "/arm/joints"
     let mut arm_pub = arm_agent.publish::<JointState>("/arm/joints")?;
 
-    // Allow time for resolution announce / discovery
-    thread::sleep(Duration::from_millis(100));
+    head_agent.reconcile_now()?;
 
     // "agent-head" resolves "/arm/joints" via referral to "agent-arm" and subscribes
     let mut head_sub = head_agent.subscribe::<JointState>("/arm/joints")?;
@@ -62,17 +60,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_sent.j1, state_sent.j2, state_sent.j3
     );
 
-    thread::sleep(Duration::from_millis(100));
-
-    if let Some(sample) = head_sub.take()? {
-        let rec = sample.header();
-        println!(
-            "Head resolved and received joint state: j1={}, j2={}, j3={}",
-            rec.j1, rec.j2, rec.j3
-        );
-    } else {
-        println!("Head did not receive sample.");
-    }
+    let sample = head_sub
+        .recv_timeout(Duration::from_secs(1))?
+        .ok_or("joint-state sample timed out")?;
+    let rec = sample.header();
+    println!(
+        "Head resolved and received joint state: j1={}, j2={}, j3={}",
+        rec.j1, rec.j2, rec.j3
+    );
 
     Ok(())
 }

@@ -4,17 +4,31 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::{Error, Result};
+use crate::naming::normalize_topic;
 
+/// Current signed directory wire version.
 pub const DIRECTORY_PROTOCOL_VERSION: u16 = 1;
+/// Default lifetime of a hosted directory record.
 pub const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum DirectoryOperation {
+    Announce,
+    Withdraw,
+}
 
 /// The peerbus exchange family hosted at a topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ExchangeKind {
+    /// Publish/subscribe stream.
     PubSub,
+    /// Request/response call.
     ReqRes,
+    /// Query/answer stream.
     QueAns,
+    /// Upload/acknowledgement stream.
     PutAck,
+    /// Bidirectional pipe.
     Pip,
 }
 
@@ -31,6 +45,7 @@ pub struct TopicRecordSpec {
 }
 
 impl TopicRecordSpec {
+    /// Create unsigned record input using the default lease duration.
     pub fn new(
         topic: impl Into<String>,
         exchange: ExchangeKind,
@@ -50,6 +65,7 @@ impl TopicRecordSpec {
         }
     }
 
+    /// Override the absolute Unix-millisecond lease deadline.
     pub fn lease_expires_at_ms(mut self, lease_expires_at_ms: u64) -> Self {
         self.lease_expires_at_ms = lease_expires_at_ms;
         self
@@ -59,6 +75,7 @@ impl TopicRecordSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TopicRecordBody {
     protocol_version: u16,
+    operation: DirectoryOperation,
     topic: String,
     exchange: ExchangeKind,
     request_type_hash: u64,
@@ -77,10 +94,19 @@ pub struct TopicEntry {
 }
 
 impl TopicEntry {
+    /// Create an owner-signed topic entry from normalized record input.
     pub fn signed(spec: TopicRecordSpec, secret: &SecretKey) -> Result<Self> {
+        let normalized = normalize_topic(&spec.topic)?;
+        if normalized != spec.topic {
+            return Err(Error::InvalidTopic {
+                topic: spec.topic,
+                reason: "directory records require a normalized absolute topic".to_string(),
+            });
+        }
         let body = TopicRecordBody {
             protocol_version: DIRECTORY_PROTOCOL_VERSION,
-            topic: spec.topic,
+            operation: DirectoryOperation::Announce,
+            topic: normalized,
             exchange: spec.exchange,
             request_type_hash: spec.request_type_hash,
             response_type_hash: spec.response_type_hash,
@@ -94,9 +120,21 @@ impl TopicEntry {
         Ok(Self { body, signature })
     }
 
+    /// Verify protocol version, lease validity, and owner signature.
     pub fn verify(&self, now_ms: u64) -> Result<()> {
         if self.body.protocol_version != DIRECTORY_PROTOCOL_VERSION {
             return Err(Error::UnsupportedProtocol(self.body.protocol_version));
+        }
+        if self.body.operation != DirectoryOperation::Announce {
+            return Err(Error::InvalidDirectoryOperation {
+                topic: self.body.topic.clone(),
+            });
+        }
+        if normalize_topic(&self.body.topic)? != self.body.topic {
+            return Err(Error::InvalidTopic {
+                topic: self.body.topic.clone(),
+                reason: "directory records require a normalized absolute topic".to_string(),
+            });
         }
         if self.body.lease_expires_at_ms <= now_ms {
             return Err(Error::ExpiredRecord {
@@ -117,6 +155,7 @@ impl TopicEntry {
         Ok(())
     }
 
+    /// Verify an exchange family and its request and response wire hashes.
     pub fn validate_exchange(
         &self,
         exchange: ExchangeKind,
@@ -140,34 +179,42 @@ impl TopicEntry {
         Ok(())
     }
 
+    /// Return the normalized topic.
     pub fn topic(&self) -> &str {
         &self.body.topic
     }
 
+    /// Return the hosted exchange family.
     pub fn exchange(&self) -> ExchangeKind {
         self.body.exchange
     }
 
+    /// Return the request or payload wire-type hash.
     pub fn request_type_hash(&self) -> u64 {
         self.body.request_type_hash
     }
 
+    /// Return the response wire-type hash for bidirectional exchanges.
     pub fn response_type_hash(&self) -> Option<u64> {
         self.body.response_type_hash
     }
 
+    /// Return the signing owner's endpoint identifier.
     pub fn endpoint_id(&self) -> EndpointId {
         EndpointId::from_bytes(&self.body.owner).expect("verified endpoint id bytes")
     }
 
+    /// Return the owner-scoped monotonic revision.
     pub fn revision(&self) -> u64 {
         self.body.revision
     }
 
+    /// Return the absolute Unix-millisecond lease deadline.
     pub fn lease_expires_at_ms(&self) -> u64 {
         self.body.lease_expires_at_ms
     }
 
+    /// Return the optional machine name carried by this record.
     pub fn machine_name(&self) -> Option<&str> {
         self.body.machine_name.as_deref()
     }
@@ -181,10 +228,13 @@ impl TopicEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WithdrawalBody {
     protocol_version: u16,
+    operation: DirectoryOperation,
     topic: String,
     exchange: ExchangeKind,
     owner: [u8; 32],
     revision: u64,
+    target_revision: u64,
+    target_signature: Vec<u8>,
 }
 
 /// An owner-signed request to remove a hosted topic record.
@@ -195,6 +245,7 @@ pub struct TopicWithdrawal {
 }
 
 impl TopicWithdrawal {
+    /// Sign a withdrawal bound to one exact current topic entry.
     pub fn signed(entry: &TopicEntry, revision: u64, secret: &SecretKey) -> Result<Self> {
         if secret.public() != entry.endpoint_id() {
             return Err(Error::OwnershipConflict {
@@ -203,19 +254,34 @@ impl TopicWithdrawal {
         }
         let body = WithdrawalBody {
             protocol_version: DIRECTORY_PROTOCOL_VERSION,
+            operation: DirectoryOperation::Withdraw,
             topic: entry.topic().to_string(),
             exchange: entry.exchange(),
             owner: *secret.public().as_bytes(),
             revision,
+            target_revision: entry.revision(),
+            target_signature: entry.signature.clone(),
         };
         let signature = sign_ed25519_detached(&postcard::to_allocvec(&body)?, &secret.to_bytes())
             .map_err(|error| Error::ControlPlane(error.to_string()))?;
         Ok(Self { body, signature })
     }
 
+    /// Verify the withdrawal protocol version and owner signature.
     pub fn verify(&self) -> Result<()> {
         if self.body.protocol_version != DIRECTORY_PROTOCOL_VERSION {
             return Err(Error::UnsupportedProtocol(self.body.protocol_version));
+        }
+        if self.body.operation != DirectoryOperation::Withdraw {
+            return Err(Error::InvalidDirectoryOperation {
+                topic: self.body.topic.clone(),
+            });
+        }
+        if normalize_topic(&self.body.topic)? != self.body.topic {
+            return Err(Error::InvalidTopic {
+                topic: self.body.topic.clone(),
+                reason: "directory withdrawals require a normalized absolute topic".to_string(),
+            });
         }
         let valid = verify_ed25519_signature(
             &postcard::to_allocvec(&self.body)?,
@@ -231,23 +297,33 @@ impl TopicWithdrawal {
         Ok(())
     }
 
+    /// Return the normalized topic to withdraw.
     pub fn topic(&self) -> &str {
         &self.body.topic
     }
 
+    /// Return the exchange family to withdraw.
     pub fn exchange(&self) -> ExchangeKind {
         self.body.exchange
     }
 
+    /// Return the signing owner's endpoint identifier.
     pub fn endpoint_id(&self) -> EndpointId {
         EndpointId::from_bytes(&self.body.owner).expect("verified endpoint id bytes")
     }
 
+    /// Return the withdrawal revision.
     pub fn revision(&self) -> u64 {
         self.body.revision
     }
+
+    pub(crate) fn targets(&self, entry: &TopicEntry) -> bool {
+        self.body.target_revision == entry.revision()
+            && self.body.target_signature == entry.signature
+    }
 }
 
+/// Return the current Unix time in milliseconds.
 pub fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -257,6 +333,7 @@ pub fn unix_time_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+/// Return a default lease deadline relative to the current time.
 pub fn default_lease_deadline_ms() -> u64 {
     unix_time_ms().saturating_add(
         DEFAULT_LEASE_DURATION
@@ -264,6 +341,15 @@ pub fn default_lease_deadline_ms() -> u64 {
             .try_into()
             .unwrap_or(u64::MAX),
     )
+}
+
+pub(crate) fn next_revision_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX.saturating_sub(1_000_000))
 }
 
 #[cfg(test)]
@@ -373,5 +459,75 @@ mod tests {
         let record = record(&owner);
         let result = TopicWithdrawal::signed(&record, 2, &SecretKey::generate());
         assert!(matches!(result, Err(Error::OwnershipConflict { .. })));
+    }
+
+    #[test]
+    fn signed_records_require_normalized_topics() {
+        let result = TopicEntry::signed(
+            TopicRecordSpec::new(
+                "relative/topic",
+                ExchangeKind::PubSub,
+                1,
+                None,
+                1,
+                None::<String>,
+            ),
+            &SecretKey::generate(),
+        );
+        assert!(matches!(result, Err(Error::InvalidTopic { .. })));
+    }
+
+    #[test]
+    fn verification_enforces_topic_and_operation_semantics() {
+        let secret = SecretKey::generate();
+        let mut non_normalized = record(&secret);
+        non_normalized.body.topic = "relative/topic".to_string();
+        non_normalized.signature = sign_ed25519_detached(
+            &postcard::to_allocvec(&non_normalized.body).unwrap(),
+            &secret.to_bytes(),
+        )
+        .unwrap();
+        assert!(matches!(
+            non_normalized.verify(unix_time_ms()),
+            Err(Error::InvalidTopic { .. })
+        ));
+
+        let current = record(&secret);
+        let mut wrong_record_operation = current.clone();
+        wrong_record_operation.body.operation = DirectoryOperation::Withdraw;
+        wrong_record_operation.signature = sign_ed25519_detached(
+            &postcard::to_allocvec(&wrong_record_operation.body).unwrap(),
+            &secret.to_bytes(),
+        )
+        .unwrap();
+        assert!(matches!(
+            wrong_record_operation.verify(unix_time_ms()),
+            Err(Error::InvalidDirectoryOperation { .. })
+        ));
+
+        let mut withdrawal = TopicWithdrawal::signed(&current, 2, &secret).unwrap();
+        withdrawal.body.operation = DirectoryOperation::Announce;
+        withdrawal.signature = sign_ed25519_detached(
+            &postcard::to_allocvec(&withdrawal.body).unwrap(),
+            &secret.to_bytes(),
+        )
+        .unwrap();
+        assert!(matches!(
+            withdrawal.verify(),
+            Err(Error::InvalidDirectoryOperation { .. })
+        ));
+    }
+
+    #[test]
+    fn withdrawal_signature_is_domain_separated() {
+        let secret = SecretKey::generate();
+        let record = record(&secret);
+        let withdrawal = TopicWithdrawal::signed(&record, 2, &secret).unwrap();
+        assert_eq!(record.body.operation, DirectoryOperation::Announce);
+        assert_eq!(withdrawal.body.operation, DirectoryOperation::Withdraw);
+        assert_ne!(
+            postcard::to_allocvec(&record.body).unwrap(),
+            postcard::to_allocvec(&withdrawal.body).unwrap()
+        );
     }
 }

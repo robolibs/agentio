@@ -16,6 +16,19 @@
 - **Planned at**: commit `df87e97`, 2026-08-07
 - **Overall status**: DONE
 
+## Completion evidence
+
+- Local `make verify` passed after the final implementation changes.
+- A standalone source copy under `/tmp` passed `make verify` without sibling
+  repositories. It reused the repository target cache because a first clean
+  artifact build exhausted the temporary filesystem quota after its test lanes
+  had passed.
+- `make examples-smoke` passed all five exchange families with real payloads.
+- A manual two-process forced-QUIC run of examples 08/09 transferred and
+  validated pub/sub, req/res, que/ans, put/ack, and pip payloads.
+- `make audit` reported no vulnerabilities and one non-blocking unmaintained
+  transitive dependency warning for `paste 1.0.15`.
+
 ## Mandatory repository rules
 
 These rules apply to every phase:
@@ -87,7 +100,11 @@ After all phases:
 - Adding a GUI, CLI product, plugin system, database, or durable history store.
 - Optimizing microbenchmarks before the benchmarks transfer real bytes.
 
-## Current state
+## Audit baseline at `df87e97`
+
+The excerpts in this section record the pre-implementation state found by the
+2026-08-07 audit. They are retained as historical evidence and do not describe
+the current checkout.
 
 ### Build and automation
 
@@ -409,12 +426,12 @@ After the operator establishes a baseline:
 
 ### Done criteria
 
-- [ ] `make verify` exits 0 locally.
-- [ ] A clean standalone copy also passes `make verify`.
-- [ ] `Cargo.lock` has only the intended authbox source.
-- [ ] No workflow references example `main`.
-- [ ] `make run` no longer reports a missing target.
-- [ ] No lint was disabled to make clippy green.
+- [x] `make verify` exits 0 locally.
+- [x] A clean standalone copy also passes `make verify`.
+- [x] `Cargo.lock` has only the intended authbox source.
+- [x] No workflow references example `main`.
+- [x] `make run` no longer reports a missing target.
+- [x] No lint was disabled to make clippy green.
 
 ### Commit
 
@@ -741,6 +758,9 @@ Do this before changing lifecycle, ACL, or directory behavior.
    statistics is added.
 8. Add Makefile targets for a bounded smoke run. Do not run infinite server
    loops in CI.
+9. Define the two-process heavy message schemas in the shared
+   `examples/shared_types` support crate so peerbus's Rust type-path hash is
+   identical in the server and client binaries.
 
 ### Tests
 

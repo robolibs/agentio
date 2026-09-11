@@ -1,75 +1,17 @@
 use agentio::{Agent, DirectoryMode, IdentitySource};
-use datapod::datapod;
+use agentio_example_messages::{
+    HeavyAnswer, HeavyImageHeader, HeavyPipAck, HeavyPipFrame, HeavyQuery, HeavyRpcReq,
+    HeavyRpcRes, HeavyUploadAck, HeavyUploadBlock,
+};
 use std::env;
 use std::thread;
 use std::time::Duration;
 
-#[datapod(name = "heavy.image_header.v1")]
-pub struct HeavyImageHeader {
-    pub frame_id: u64,
-    pub width: u64,
-    pub height: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.rpc_req.v1")]
-pub struct HeavyRpcReq {
-    pub requested_bytes: u64,
-}
-
-#[datapod(name = "heavy.rpc_res.v1")]
-pub struct HeavyRpcRes {
-    pub checksum: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.query.v1")]
-pub struct HeavyQuery {
-    pub total_chunks: u64,
-    pub chunk_bytes: u64,
-}
-
-#[datapod(name = "heavy.answer.v1")]
-pub struct HeavyAnswer {
-    pub chunk_index: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.upload_block.v1")]
-pub struct HeavyUploadBlock {
-    pub block_index: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.upload_ack.v1")]
-pub struct HeavyUploadAck {
-    pub total_blocks: u64,
-    pub total_bytes: u64,
-}
-
-#[datapod(name = "heavy.pip_frame.v1")]
-pub struct HeavyPipFrame {
-    pub frame_seq: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.pip_ack.v1")]
-pub struct HeavyPipAck {
-    pub ack_seq: u64,
-    pub bytes_received: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
+const MAX_RPC_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_CHUNKS: u64 = 256;
+const MAX_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PIP_FRAME_BYTES: u64 = 8 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -95,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let agent = builder.build()?;
-    let _ = agent.wait_for_direct_addresses(Duration::from_secs(5));
+    agent.wait_for_direct_addresses(Duration::from_secs(5))?;
 
     let endpoint_id = agent.endpoint_id();
     let did_key = agent.did_key()?;
@@ -141,7 +83,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match rpc_srv.recv_timeout(Duration::from_millis(100)) {
                 Ok(Some((sample, reply))) => {
                     let req = sample.header();
-                    let req_bytes = req.requested_bytes as usize;
+                    let Ok(req_bytes) = usize::try_from(req.requested_bytes) else {
+                        eprintln!("  [Req/Res] Rejected unsupported payload size");
+                        continue;
+                    };
+                    if req.requested_bytes > MAX_RPC_BYTES {
+                        eprintln!("  [Req/Res] Rejected oversized payload request");
+                        continue;
+                    }
                     println!(
                         "  [Req/Res] Generating and responding with {:.2} MB payload...",
                         req_bytes as f64 / 1_000_000.0
@@ -173,6 +122,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match que_srv.recv_timeout(Duration::from_millis(100)) {
                 Ok(Some((que_sample, mut ans_sender))) => {
                     let q = que_sample.header();
+                    let valid_size = q.chunk_bytes <= MAX_CHUNK_BYTES
+                        && q.total_chunks <= MAX_CHUNKS
+                        && q.chunk_bytes.checked_mul(q.total_chunks) <= Some(MAX_UPLOAD_BYTES);
+                    let Ok(chunk_bytes) = usize::try_from(q.chunk_bytes) else {
+                        let _ = ans_sender.finish();
+                        continue;
+                    };
+                    if !valid_size {
+                        eprintln!("  [Que/Ans] Rejected oversized stream request");
+                        let _ = ans_sender.finish();
+                        continue;
+                    }
                     println!(
                         "  [Que/Ans] Streaming {} chunks of {:.2} MB each...",
                         q.total_chunks,
@@ -180,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
 
                     for idx in 0..q.total_chunks {
-                        let data = vec![idx as u8; q.chunk_bytes as usize];
+                        let data = vec![idx as u8; chunk_bytes];
                         let _ = ans_sender.send(&HeavyAnswer {
                             chunk_index: idx,
                             payload_bytes: q.chunk_bytes,
@@ -214,6 +175,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let payload = block.payload();
                         if payload.len() as u64 != header.payload_bytes
                             || payload.iter().any(|byte| *byte != header.block_index as u8)
+                            || total_bytes
+                                .checked_add(payload.len() as u64)
+                                .is_none_or(|total| total > MAX_UPLOAD_BYTES)
                         {
                             eprintln!("  [Put/Ack] Rejected invalid upload block");
                             continue;
@@ -257,6 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let payload = frame.payload();
                         let bytes = payload.len() as u64;
                         if bytes != frame.header().payload_bytes
+                            || bytes > MAX_PIP_FRAME_BYTES
                             || payload
                                 .iter()
                                 .any(|byte| *byte != frame.header().frame_seq as u8)

@@ -1,13 +1,15 @@
-use peerbus::{DatapodMsg, EndpointId, Node};
+use peerbus::{DatapodMsg, EndpointId, Node, NodeBuilder};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::core::{
-    Agent, AgentInner, ControlLoopConfig, ControlWorker, run_control_loop, run_resolution_loop,
+    Agent, AgentInner, ControlLoopConfig, ControlWorker, control_channel, run_control_loop,
+    run_resolution_loop,
 };
 use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
-use crate::directory::{ControlPlaneHealth, Directory, RESOLUTION_TOPIC};
+use crate::directory::{ControlPlaneHealth, Directory, RESOLUTION_TOPIC, next_revision_seed};
 use crate::error::{Error, Result};
 use crate::identity::{IdentitySource, resolve_identity};
 use crate::naming::NameTable;
@@ -23,9 +25,15 @@ pub struct AgentBuilder {
     pub(crate) allow_any_peer: bool,
     pub(crate) no_relay: bool,
     pub(crate) skip_shm: bool,
+    pub(crate) lease_duration: Duration,
+    pub(crate) control_timeout: Duration,
+    pub(crate) local_config: Option<peerbus::LocalConfig>,
+    #[cfg(test)]
+    force_resolution_collision: bool,
 }
 
 impl AgentBuilder {
+    /// Create a builder with deny-by-default authorization and replicated resolution.
     pub fn new() -> Self {
         Self {
             name: None,
@@ -37,7 +45,20 @@ impl AgentBuilder {
             allow_any_peer: false,
             no_relay: false,
             skip_shm: false,
+            lease_duration: crate::directory::DEFAULT_LEASE_DURATION,
+            control_timeout: Duration::from_secs(6),
+            local_config: None,
+            #[cfg(test)]
+            force_resolution_collision: false,
         }
+    }
+
+    /// Shared-memory ring limits for every topic this agent hosts. Peerbus
+    /// pins them at segment creation; its default allows two request
+    /// producers per service, which a third local client exceeds.
+    pub fn local_config(mut self, config: peerbus::LocalConfig) -> Self {
+        self.local_config = Some(config);
+        self
     }
 
     /// Set a human-readable name for this Machine / Agent instance (e.g. "agent-1", "head").
@@ -130,6 +151,18 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the signed directory-record lease duration.
+    pub fn lease_duration(mut self, lease_duration: Duration) -> Self {
+        self.lease_duration = lease_duration.max(Duration::from_millis(30));
+        self
+    }
+
+    /// Set the caller-visible deadline for directory control operations.
+    pub fn control_timeout(mut self, control_timeout: Duration) -> Self {
+        self.control_timeout = control_timeout.max(Duration::from_millis(1));
+        self
+    }
+
     /// Build the `Agent` machine instance.
     pub fn build(self) -> Result<Agent> {
         if !self.configuration_errors.is_empty() {
@@ -139,16 +172,12 @@ impl AgentBuilder {
         let secret = resolve_identity(&self.identity_source)?;
         let endpoint_id = secret.public();
 
-        let mut builder = Node::builder().secret_key(secret.clone());
-        if self.allow_any_peer {
-            tracing::warn!("inbound peer allowlist disabled");
-            builder = builder.allow_any_peer();
-        } else {
-            builder = builder.allow_peer(endpoint_id);
-        }
-        for &peer in &self.allowed_peers {
-            builder = builder.allow_peer(peer);
-        }
+        let mut builder = configure_inbound_policy(
+            Node::builder().secret_key(secret.clone()),
+            endpoint_id,
+            &self.allowed_peers,
+            self.allow_any_peer,
+        );
 
         if self.no_relay {
             builder = builder.no_relay();
@@ -158,21 +187,31 @@ impl AgentBuilder {
             builder = builder.skip_shm();
         }
 
+        if let Some(config) = self.local_config.clone() {
+            builder = builder.local_config(config);
+        }
+
         if let Some(ref label) = self.name {
             builder = builder.label(label);
         }
 
         let node = builder.bind()?;
         let directory = Directory::new();
-        let name_table = NameTable::new();
+        let name_table = NameTable::with_directory(directory.clone());
         let machine_name = self.name.clone().unwrap_or_else(|| "machine".to_string());
 
         name_table.register(&machine_name, endpoint_id);
 
+        #[cfg(test)]
+        let _collision = if self.force_resolution_collision {
+            Some(node.req_server::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC)?)
+        } else {
+            None
+        };
         let server = node.req_server::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC)?;
         let health = Arc::new(ControlPlaneHealth::default());
         let hosted_records = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let next_revision = Arc::new(AtomicU64::new(1));
+        let next_revision = Arc::new(AtomicU64::new(next_revision_seed()));
         let (resolver_shutdown_tx, resolver_shutdown_rx) = std::sync::mpsc::channel();
         let worker_health = health.clone();
         let dir_clone = directory.clone();
@@ -201,11 +240,14 @@ impl AgentBuilder {
             hosted_records: hosted_records.clone(),
             next_revision: next_revision.clone(),
             health: health.clone(),
+            lease_duration: self.lease_duration,
+            control_timeout: self.control_timeout,
         };
+        let (control_tx, control_rx) = control_channel();
         let (control_shutdown_tx, control_shutdown_rx) = std::sync::mpsc::channel();
         let control_join = match std::thread::Builder::new()
             .name(format!("agentio-control-{machine_name}"))
-            .spawn(move || run_control_loop(control_config, control_shutdown_rx))
+            .spawn(move || run_control_loop(control_config, control_rx, control_shutdown_rx))
         {
             Ok(join) => join,
             Err(error) => {
@@ -228,9 +270,12 @@ impl AgentBuilder {
             allow_any_peer: self.allow_any_peer,
             no_relay: self.no_relay,
             skip_shm: self.skip_shm,
+            lease_duration: self.lease_duration,
+            control_timeout: self.control_timeout,
             health,
             next_revision,
             hosted_records,
+            control_tx,
             workers: Mutex::new(vec![
                 ControlWorker {
                     shutdown_tx: resolver_shutdown_tx,
@@ -247,6 +292,24 @@ impl AgentBuilder {
     }
 }
 
+fn configure_inbound_policy(
+    mut builder: NodeBuilder,
+    endpoint_id: EndpointId,
+    allowed_peers: &[EndpointId],
+    allow_any_peer: bool,
+) -> NodeBuilder {
+    if allow_any_peer {
+        tracing::warn!("inbound peer allowlist disabled");
+        builder = builder.allow_any_peer();
+    } else {
+        builder = builder.allow_peer(endpoint_id);
+    }
+    for peer in allowed_peers {
+        builder = builder.allow_peer(*peer);
+    }
+    builder
+}
+
 impl Default for AgentBuilder {
     fn default() -> Self {
         Self::new()
@@ -257,6 +320,21 @@ impl Default for AgentBuilder {
 mod tests {
     use super::*;
     use crate::identity::IdentitySource;
+    use std::io::Write;
+
+    #[derive(Clone)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn invalid_bootstrap_is_reported() {
@@ -265,5 +343,34 @@ mod tests {
             .bootstrap(["not-an-endpoint"])
             .build();
         assert!(matches!(result, Err(Error::Configuration(_))));
+    }
+
+    #[test]
+    fn resolution_server_collision_fails_build() {
+        let mut builder = Agent::builder().identity(IdentitySource::Random);
+        builder.force_resolution_collision = true;
+        assert!(builder.build().is_err());
+    }
+
+    #[test]
+    fn allow_any_peer_emits_warning() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer = SharedWriter(captured.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let secret = peerbus::SecretKey::generate();
+            let _ = configure_inbound_policy(
+                Node::builder().secret_key(secret.clone()),
+                secret.public(),
+                &[],
+                true,
+            );
+        });
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("inbound peer allowlist disabled"));
     }
 }

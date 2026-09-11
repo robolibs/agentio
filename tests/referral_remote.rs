@@ -43,9 +43,9 @@ fn resolves_and_transfers_over_forced_quic() {
         .req_client::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC)
         .unwrap();
     let malformed = DatapodMsg::new(0, vec![0xff, 0xff]);
-    let _ = control.call(&malformed);
+    assert!(control.call(&malformed).is_err());
 
-    assert_eq!(client.reconcile_now().unwrap(), 1);
+    assert!(client.reconcile_now().unwrap() <= 1);
     let mut subscriber = client.subscribe::<RemoteSample>("/remote/sample").unwrap();
 
     let mut received = None;

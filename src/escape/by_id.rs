@@ -21,6 +21,7 @@ impl<'a> fmt::Debug for ById<'a> {
 }
 
 impl<'a> ById<'a> {
+    /// Create a direct-addressed view over a Node and peer identifier.
     pub fn new(node: &'a Node, peer_id: EndpointId) -> Self {
         Self { node, peer_id }
     }

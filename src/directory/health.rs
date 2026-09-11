@@ -1,14 +1,23 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Snapshot of observable directory control-plane state.
 pub struct DirectoryHealth {
+    /// Remote announcements acknowledged by a directory target.
     pub successful_announcements: u64,
+    /// Remote announcements or withdrawals that failed.
     pub announcement_failures: u64,
+    /// Resolver receive or response errors.
     pub resolver_errors: u64,
+    /// Invalid or malformed records rejected by the resolver.
     pub rejected_records: u64,
+    /// Unix-millisecond time of the last successful reconciliation.
     pub last_successful_reconciliation_ms: u64,
+    /// Configured seeds that failed the most recent reconciliation attempt.
     pub stale_seeds: u64,
+    /// Observable live-owner or equal-revision conflicts.
     pub conflicts: u64,
+    /// Announcement targets currently being processed.
     pub pending_announcements: u64,
 }
 
@@ -45,6 +54,10 @@ impl ControlPlaneHealth {
     pub(crate) fn reconciled(&self, timestamp_ms: u64, stale_seeds: u64) {
         self.last_successful_reconciliation_ms
             .store(timestamp_ms, Ordering::Relaxed);
+        self.stale_seeds.store(stale_seeds, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_stale_seeds(&self, stale_seeds: u64) {
         self.stale_seeds.store(stale_seeds, Ordering::Relaxed);
     }
 

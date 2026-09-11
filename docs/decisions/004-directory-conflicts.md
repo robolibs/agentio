@@ -11,12 +11,15 @@ owners claiming the same topic should be handled.
 A topic and exchange kind have at most one live owner record:
 
 - higher revisions replace older records from the same owner;
-- an older or equal revision is idempotent and cannot roll state back;
+- an older revision cannot roll state back;
+- an equal revision is idempotent only for the identical signed record and is
+  otherwise a typed revision conflict;
 - a different owner cannot replace a live record;
 - competing live owners produce an observable conflict;
 - signed withdrawal removes only the current owner's record;
 - records have bounded leases and expire without renewal;
-- snapshots are bounded and reconciled on startup and reconnect;
+- snapshots are bounded, generation-stable, and reconciled at startup,
+  periodically, and on demand;
 - front-door mode uses its configured authority for conflict arbitration;
 - replicated mode reconciles all configured seeds independently.
 

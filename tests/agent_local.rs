@@ -8,6 +8,10 @@ mod all_exchanges {
     pub(super) fn run_remote() {
         run(true).unwrap();
     }
+
+    pub(super) fn rejects_tampered_count() {
+        assert!(!payload_matches(100, &[1, 1], 1));
+    }
 }
 
 #[test]
@@ -18,4 +22,9 @@ fn all_exchange_families_complete() {
 #[test]
 fn all_exchange_families_complete_over_quic() {
     all_exchanges::run_remote();
+}
+
+#[test]
+fn claimed_payload_size_cannot_inflate_measurement() {
+    all_exchanges::rejects_tampered_count();
 }

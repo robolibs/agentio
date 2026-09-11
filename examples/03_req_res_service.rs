@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server =
         server_agent.req_server::<GetPoseRequest, GetPoseResponse>("/perception/get_pose")?;
 
-    thread::sleep(Duration::from_millis(100));
+    client_agent.reconcile_now()?;
 
     // 2. Client resolves req/res topic and creates client
     let mut client =

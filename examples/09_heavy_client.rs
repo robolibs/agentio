@@ -1,74 +1,10 @@
 use agentio::{Agent, DirectoryMode, IdentitySource};
-use datapod::datapod;
+use agentio_example_messages::{
+    HeavyAnswer, HeavyImageHeader, HeavyPipAck, HeavyPipFrame, HeavyQuery, HeavyRpcReq,
+    HeavyRpcRes, HeavyUploadAck, HeavyUploadBlock,
+};
 use std::env;
 use std::time::{Duration, Instant};
-
-#[datapod(name = "heavy.image_header.v1")]
-pub struct HeavyImageHeader {
-    pub frame_id: u64,
-    pub width: u64,
-    pub height: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.rpc_req.v1")]
-pub struct HeavyRpcReq {
-    pub requested_bytes: u64,
-}
-
-#[datapod(name = "heavy.rpc_res.v1")]
-pub struct HeavyRpcRes {
-    pub checksum: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.query.v1")]
-pub struct HeavyQuery {
-    pub total_chunks: u64,
-    pub chunk_bytes: u64,
-}
-
-#[datapod(name = "heavy.answer.v1")]
-pub struct HeavyAnswer {
-    pub chunk_index: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.upload_block.v1")]
-pub struct HeavyUploadBlock {
-    pub block_index: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.upload_ack.v1")]
-pub struct HeavyUploadAck {
-    pub total_blocks: u64,
-    pub total_bytes: u64,
-}
-
-#[datapod(name = "heavy.pip_frame.v1")]
-pub struct HeavyPipFrame {
-    pub frame_seq: u64,
-    pub payload_bytes: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
-
-#[datapod(name = "heavy.pip_ack.v1")]
-pub struct HeavyPipAck {
-    pub ack_seq: u64,
-    pub bytes_received: u64,
-    #[dp(bytes)]
-    pub data: Vec<u8>,
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -114,7 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let client_agent = builder.build()?;
-    let _ = client_agent.wait_for_direct_addresses(Duration::from_secs(5));
+    client_agent.wait_for_direct_addresses(Duration::from_secs(5))?;
+    client_agent.reconcile_now()?;
     println!("Client Endpoint ID: {}", client_agent.endpoint_id());
     println!("  [*] Initializing network transport...\n");
 
@@ -154,6 +91,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
         }
+    }
+    if received_count != 5 {
+        return Err(format!("received {received_count} of 5 image frames").into());
     }
     let elapsed = start_time.elapsed();
     let mb_received = total_bytes as f64 / 1_000_000.0;
@@ -207,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_chunks = 0u64;
     let mut total_bytes = 0u64;
 
-    while let Ok(Some(hit)) = answers.next() {
+    while let Some(hit) = answers.next()? {
         let h = hit.header();
         total_chunks += 1;
         let payload = hit.payload();
@@ -222,6 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    assert_eq!(total_chunks, 20);
     let elapsed = start_time.elapsed();
     let mb_received = total_bytes as f64 / 1_000_000.0;
     let speed_mbps = mb_received / elapsed.as_secs_f64();
@@ -232,7 +173,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed.as_secs_f64(),
         speed_mbps
     );
-    assert_eq!(total_chunks, 20);
 
     // ------------------------------------------------------------------------
     // Pattern 4: Put / Ack (30 Upload Blocks x 1 MB = 30 MB Upload)
@@ -263,6 +203,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ack = upload.finish()?;
     let elapsed = start_time.elapsed();
     let ack_h = ack.header();
+    assert_eq!(ack_h.total_blocks, total_blocks_to_send);
+    assert_eq!(ack_h.total_bytes, total_blocks_to_send * block_bytes);
     let mb_uploaded = ack_h.total_bytes as f64 / 1_000_000.0;
     let speed_mbps = mb_uploaded / elapsed.as_secs_f64();
     println!(
@@ -275,8 +217,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed.as_secs_f64(),
         speed_mbps
     );
-    assert_eq!(ack_h.total_blocks, total_blocks_to_send);
-    assert_eq!(ack_h.total_bytes, total_blocks_to_send * block_bytes);
 
     // ------------------------------------------------------------------------
     // Pattern 5: Pip Streaming (Bi-directional Heavy Stream 15 MB)
@@ -289,21 +229,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pip_frames = 15u64;
     let frame_bytes = 1_000_000u64; // 1 MB per frame
+    let mut ack_count = 0u64;
+    let mut received_pip_bytes = 0u64;
     for f in 1..=pip_frames {
         pip.send(&HeavyPipFrame {
             frame_seq: f,
             payload_bytes: frame_bytes,
             data: vec![f as u8; frame_bytes as usize],
         })?;
-    }
-    pip.finish_send()?;
-
-    let mut ack_count = 0u64;
-    while let Ok(Some(reply)) = pip.next() {
+        let reply = pip
+            .next()?
+            .ok_or("pipeline closed before acknowledgement")?;
         ack_count += 1;
         let h = reply.header();
+        assert_eq!(h.ack_seq, f);
         assert_eq!(reply.payload().len() as u64, h.bytes_received);
         assert!(reply.payload().iter().all(|byte| *byte == h.ack_seq as u8));
+        received_pip_bytes = received_pip_bytes.saturating_add(reply.payload().len() as u64);
         if ack_count.is_multiple_of(5) {
             println!(
                 "  -> Received Pipe Ack #{}: frame_seq={}",
@@ -311,8 +253,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    pip.finish_send()?;
+    assert_eq!(ack_count, pip_frames);
     let elapsed = start_time.elapsed();
-    let total_pip_bytes = (pip_frames as f64 * frame_bytes as f64) / 1_000_000.0;
+    let total_pip_bytes = received_pip_bytes as f64 / 1_000_000.0;
     let speed_mbps = total_pip_bytes / elapsed.as_secs_f64();
     println!(
         "  [OK] Pip Streaming: Processed {} frames ({:.2} MB) in {:.2}s ({:.2} MB/s)\n",
@@ -321,7 +265,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed.as_secs_f64(),
         speed_mbps
     );
-    assert_eq!(ack_count, pip_frames);
 
     let total_elapsed = overall_start.elapsed();
     println!("============================================================");

@@ -41,17 +41,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 5. Receive payload
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    if let Some(sample) = subscriber.take()? {
-        let pose_received = sample.header();
-        println!(
-            "Received pose: x={}, y={}, yaw={}",
-            pose_received.x, pose_received.y, pose_received.yaw
-        );
-        assert_eq!(pose_received.x, pose_sent.x);
-    } else {
-        println!("No sample received.");
-    }
+    let sample = subscriber
+        .recv_timeout(std::time::Duration::from_secs(1))?
+        .ok_or("pose sample timed out")?;
+    let pose_received = sample.header();
+    println!(
+        "Received pose: x={}, y={}, yaw={}",
+        pose_received.x, pose_received.y, pose_received.yaw
+    );
+    assert_eq!(pose_received.x, pose_sent.x);
 
     Ok(())
 }

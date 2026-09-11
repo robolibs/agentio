@@ -13,6 +13,7 @@ pub enum DirectoryMode {
 
 /// Trait for items that can be converted into a bootstrap peer `EndpointId`.
 pub trait TryIntoBootstrapPeer {
+    /// Convert this value into a validated endpoint identifier.
     fn try_into_bootstrap_peer(self) -> Result<EndpointId>;
 }
 

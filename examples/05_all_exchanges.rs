@@ -7,7 +7,10 @@ use std::time::Duration;
 #[datapod(name = "agentio.telemetry.v1")]
 struct Telemetry {
     pub seq: u64,
-    pub val: f32,
+    pub val: f64,
+    pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 // 2. Req/Res Payloads
@@ -15,11 +18,15 @@ struct Telemetry {
 struct MathReq {
     pub x: i32,
     pub y: i32,
+    pub response_bytes: u64,
 }
 
 #[datapod(name = "agentio.math_res.v1")]
 struct MathRes {
-    pub sum: i32,
+    pub sum: i64,
+    pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 // 3. Que/Ans Payloads
@@ -27,34 +34,51 @@ struct MathRes {
 struct RangeQuery {
     pub start: i32,
     pub count: u32,
+    pub chunk_bytes: u64,
 }
 
 #[datapod(name = "agentio.range_hit.v1")]
 struct RangeHit {
-    pub value: i32,
+    pub value: i64,
+    pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 // 4. Put/Ack Payloads
 #[datapod(name = "agentio.data_block.v1")]
 struct DataBlock {
-    pub bytes_count: u32,
+    pub block_index: u64,
+    pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "agentio.upload_result.v1")]
 struct UploadResult {
-    pub total_blocks: u32,
-    pub total_bytes: u32,
+    pub total_blocks: u64,
+    pub total_bytes: u64,
 }
 
 // 5. Pip Streaming Payloads
 #[datapod(name = "agentio.audio_chunk.v1")]
 struct AudioChunk {
-    pub sample_id: u32,
+    pub sample_id: u64,
+    pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
 }
 
 #[datapod(name = "agentio.audio_feedback.v1")]
 struct AudioFeedback {
-    pub echo_id: u32,
+    pub echo_id: u64,
+    pub payload_bytes: u64,
+    #[dp(bytes)]
+    pub data: Vec<u8>,
+}
+
+fn payload_matches(claimed: u64, payload: &[u8], expected: u8) -> bool {
+    payload.len() as u64 == claimed && payload.iter().all(|byte| *byte == expected)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -119,6 +143,8 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
         pubr.send(&Telemetry {
             seq: 101,
             val: 98.6,
+            payload_bytes: 4_096,
+            data: vec![0x11; 4_096],
         })?;
         if let Some(sample) = sub.recv_timeout(Duration::from_millis(250))? {
             received = Some(sample);
@@ -132,6 +158,11 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
         telemetry.seq, telemetry.val
     );
     assert_eq!(telemetry.seq, 101);
+    assert!(payload_matches(
+        telemetry.payload_bytes,
+        sample.payload(),
+        0x11
+    ));
     println!("  [OK] Pub/Sub test passed.\n");
 
     // ------------------------------------------------------------------------
@@ -148,7 +179,13 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| e.to_string())?
             {
                 let req = sample.header();
-                let res = MathRes { sum: req.x + req.y };
+                let response_bytes = usize::try_from(req.response_bytes)
+                    .map_err(|_| "response size does not fit usize".to_string())?;
+                let res = MathRes {
+                    sum: i64::from(req.x) + i64::from(req.y),
+                    payload_bytes: req.response_bytes,
+                    data: vec![0x22; response_bytes],
+                };
                 reply.respond(&res).map_err(|e| e.to_string())?;
                 return Ok(());
             }
@@ -156,12 +193,21 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
         Err("Req/Res server timed out".to_string())
     });
 
-    let res_sample = req_cli.call(&MathReq { x: 15, y: 27 })?;
+    let res_sample = req_cli.call(&MathReq {
+        x: 15,
+        y: 27,
+        response_bytes: 8_192,
+    })?;
     println!(
         "  -> Client called 15 + 27, received sum = {}",
         res_sample.header().sum
     );
     assert_eq!(res_sample.header().sum, 42);
+    assert_eq!(
+        res_sample.header().payload_bytes,
+        res_sample.payload().len() as u64
+    );
+    assert!(res_sample.payload().iter().all(|byte| *byte == 0x22));
     srv_handle_req.join().unwrap().unwrap();
     println!("  [OK] Req/Res test passed.\n");
 
@@ -179,7 +225,9 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
                 for offset in 0..q.count {
                     ans_sender
                         .send(&RangeHit {
-                            value: q.start + offset as i32,
+                            value: i64::from(q.start + offset as i32),
+                            payload_bytes: q.chunk_bytes,
+                            data: vec![(q.start + offset as i32) as u8; q.chunk_bytes as usize],
                         })
                         .map_err(|e| e.to_string())?;
                 }
@@ -194,9 +242,15 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut answers_handle = que_cli.send(&RangeQuery {
         start: 10,
         count: 3,
+        chunk_bytes: 2_048,
     })?;
     let mut hits = Vec::new();
     while let Some(hit_sample) = answers_handle.next()? {
+        assert!(payload_matches(
+            hit_sample.header().payload_bytes,
+            hit_sample.payload(),
+            hit_sample.header().value as u8
+        ));
         hits.push(hit_sample.header().value);
     }
     println!(
@@ -217,11 +271,18 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
     let srv_handle_put = thread::spawn(move || -> Result<(), String> {
         for _ in 0..10 {
             if let Some(mut puts_recv) = put_srv.take().map_err(|e| e.to_string())? {
-                let mut blocks = 0;
+                let mut blocks = 0u64;
                 let mut total_bytes = 0;
                 while let Some(block) = puts_recv.next().map_err(|e| e.to_string())? {
+                    if !payload_matches(
+                        block.header().payload_bytes,
+                        block.payload(),
+                        block.header().block_index as u8,
+                    ) {
+                        return Err("invalid upload payload".to_string());
+                    }
                     blocks += 1;
-                    total_bytes += block.header().bytes_count;
+                    total_bytes += block.payload().len() as u64;
                 }
                 puts_recv
                     .ack(&UploadResult {
@@ -237,8 +298,16 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut upload = put_cli.open()?;
-    upload.send(&DataBlock { bytes_count: 512 })?;
-    upload.send(&DataBlock { bytes_count: 1024 })?;
+    upload.send(&DataBlock {
+        block_index: 1,
+        payload_bytes: 512,
+        data: vec![1; 512],
+    })?;
+    upload.send(&DataBlock {
+        block_index: 2,
+        payload_bytes: 1_024,
+        data: vec![2; 1_024],
+    })?;
     let ack_sample = upload.finish()?;
     println!(
         "  -> Client uploaded 2 blocks, Ack received: total_blocks={}, total_bytes={}",
@@ -261,8 +330,17 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..10 {
             if let Some(mut pip_session) = pip_srv.take().map_err(|e| e.to_string())? {
                 while let Some(chunk) = pip_session.next().map_err(|e| e.to_string())? {
+                    if !payload_matches(
+                        chunk.header().payload_bytes,
+                        chunk.payload(),
+                        chunk.header().sample_id as u8,
+                    ) {
+                        return Err("invalid pipe payload".to_string());
+                    }
                     let feedback = AudioFeedback {
                         echo_id: chunk.header().sample_id * 100,
+                        payload_bytes: chunk.payload().len() as u64,
+                        data: chunk.payload().to_vec(),
                     };
                     pip_session.send(&feedback).map_err(|e| e.to_string())?;
                 }
@@ -275,12 +353,25 @@ fn run(force_quic: bool) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut pip_stream = pip_cli.open()?;
-    pip_stream.send(&AudioChunk { sample_id: 1 })?;
-    pip_stream.send(&AudioChunk { sample_id: 2 })?;
+    pip_stream.send(&AudioChunk {
+        sample_id: 1,
+        payload_bytes: 1_024,
+        data: vec![1; 1_024],
+    })?;
+    pip_stream.send(&AudioChunk {
+        sample_id: 2,
+        payload_bytes: 1_024,
+        data: vec![2; 1_024],
+    })?;
     pip_stream.finish_send()?;
 
     let mut feedback_echoes = Vec::new();
     while let Some(reply_sample) = pip_stream.next()? {
+        assert!(payload_matches(
+            reply_sample.header().payload_bytes,
+            reply_sample.payload(),
+            (reply_sample.header().echo_id / 100) as u8
+        ));
         feedback_echoes.push(reply_sample.header().echo_id);
     }
     println!(

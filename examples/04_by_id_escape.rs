@@ -1,6 +1,5 @@
 use agentio::{Agent, IdentitySource};
 use datapod::datapod;
-use std::thread;
 use std::time::Duration;
 
 #[datapod]
@@ -26,8 +25,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // node1 publishes a raw topic
     let mut pub1 = node1.publish::<StatusPing>("/status")?;
 
-    thread::sleep(Duration::from_millis(50));
-
     // node2 uses by_id escape hatch to dial node1 directly by EndpointId, skipping directory lookup
     let by_id = node2.by_id(node1.endpoint_id())?;
     let mut sub2 = by_id.subscribe::<StatusPing>("/status")?;
@@ -36,16 +33,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pub1.send(&ping)?;
     println!("Node 1 sent ping seq: {}", ping.seq);
 
-    thread::sleep(Duration::from_millis(100));
-
-    if let Some(sample) = sub2.take()? {
-        println!(
-            "Node 2 received ping via by_id escape hatch: seq={}",
-            sample.header().seq
-        );
-    } else {
-        println!("No sample received.");
-    }
+    let sample = sub2
+        .recv_timeout(Duration::from_secs(1))?
+        .ok_or("status sample timed out")?;
+    println!(
+        "Node 2 received ping via by_id escape hatch: seq={}",
+        sample.header().seq
+    );
 
     Ok(())
 }

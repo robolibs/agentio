@@ -41,6 +41,7 @@ dependencies = [
 name = "agentio"
 version = "0.1.0"
 dependencies = [
+ "agentio-example-messages",
  "authbox",
  "blake3",
  "datapod",
@@ -52,6 +53,13 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "agentio-example-messages"
+version = "0.0.0"
+dependencies = [
+ "datapod",
 ]
 
 [[package]]

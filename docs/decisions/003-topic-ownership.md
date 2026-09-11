@@ -8,8 +8,8 @@ routing. Topic entries also lacked exchange and response type information.
 
 ## Decision
 
-Every announced or withdrawn record will carry a detached Ed25519 signature
-over a canonical postcard encoding of:
+Every announced record carries a detached Ed25519 signature over a canonical
+postcard encoding of:
 
 - protocol version;
 - normalized topic;
@@ -21,6 +21,11 @@ over a canonical postcard encoding of:
 - lease expiry;
 - optional machine name;
 - operation kind.
+
+A withdrawal uses a distinct operation domain and signs the target record's
+revision and signature plus a newer withdrawal revision. The target signature
+cryptographically binds the remaining record fields, so a withdrawal cannot be
+replayed against a replacement record from the same owner.
 
 Signing and verification use authbox
 `sign_ed25519_detached` and `verify_ed25519_signature`. Agentio retains the

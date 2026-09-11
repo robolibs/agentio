@@ -2,9 +2,10 @@ use peerbus::{
     AckServer, AnsServer, DatapodMsg, EndpointId, Node, PipClient, PipServer, Publisher, PutClient,
     QueClient, ReqClient, ReqServer, Subscriber, wire_type_hash,
 };
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use crate::directory::{
     ControlPlaneHealth, Directory, DirectoryHealth, ExchangeKind, MAX_DIRECTORY_BATCH,
@@ -21,6 +22,11 @@ use super::mode::{DirectoryMode, TryIntoBootstrapPeer};
 use super::registered::Registered;
 
 type HostedKey = (String, ExchangeKind);
+const CONTROL_QUEUE_CAPACITY: usize = 64;
+
+fn internal_control_timeout(timeout: Duration) -> Duration {
+    timeout.saturating_sub((timeout / 2).min(Duration::from_millis(100)))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct HostedRecord {
@@ -43,10 +49,36 @@ pub(crate) struct AgentInner {
     pub(crate) allow_any_peer: bool,
     pub(crate) no_relay: bool,
     pub(crate) skip_shm: bool,
+    pub(crate) lease_duration: Duration,
+    pub(crate) control_timeout: Duration,
     pub(crate) health: Arc<ControlPlaneHealth>,
     pub(crate) next_revision: Arc<AtomicU64>,
     pub(crate) hosted_records: Arc<Mutex<std::collections::HashMap<HostedKey, HostedRecord>>>,
+    pub(crate) control_tx: mpsc::SyncSender<ControlCommand>,
     pub(crate) workers: Mutex<Vec<ControlWorker>>,
+}
+
+pub(crate) enum ControlCommand {
+    Query {
+        target_ids: Vec<EndpointId>,
+        request: ResolveRequest,
+        reply: mpsc::Sender<Result<TopicEntry>>,
+    },
+    Reconcile {
+        reply: mpsc::Sender<Result<usize>>,
+    },
+    Announce(Vec<TopicEntry>),
+    Withdraw(Vec<TopicWithdrawal>),
+    Renew {
+        reply: mpsc::Sender<usize>,
+    },
+}
+
+pub(crate) fn control_channel() -> (
+    mpsc::SyncSender<ControlCommand>,
+    mpsc::Receiver<ControlCommand>,
+) {
+    mpsc::sync_channel(CONTROL_QUEUE_CAPACITY)
 }
 
 pub(crate) struct ControlWorker {
@@ -63,6 +95,9 @@ impl Drop for AgentInner {
         for worker in &workers {
             let _ = worker.shutdown_tx.send(());
         }
+        if let Err(error) = self.node.clone().close() {
+            tracing::warn!(%error, "agentio node close failed during shutdown");
+        }
         for worker in workers {
             if worker.join_handle.join().is_err() {
                 tracing::error!("agentio control worker panicked during shutdown");
@@ -78,6 +113,7 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Create an Agent builder.
     pub fn builder() -> AgentBuilder {
         AgentBuilder::new()
     }
@@ -167,32 +203,30 @@ impl Agent {
 
     /// Fetch bounded signed snapshots from configured directory targets.
     pub fn reconcile_now(&self) -> Result<usize> {
-        reconcile_directory(
-            &self.inner.node,
-            self.inner.endpoint_id,
-            &self.inner.directory_mode,
-            &self.inner.bootstrap_peers,
-            &self.inner.directory,
-            &self.inner.name_table,
-            &self.inner.health,
-        )
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.inner
+            .control_tx
+            .try_send(ControlCommand::Reconcile { reply: reply_tx })
+            .map_err(|error| Error::ControlPlane(error.to_string()))?;
+        reply_rx
+            .recv_timeout(self.inner.control_timeout)
+            .map_err(|_| Error::ControlTimeout(self.inner.control_timeout))?
     }
 
     /// Renew every locally hosted signed record and return the renewed count.
     pub fn renew_now(&self) -> usize {
-        renew_hosted_records(&ControlLoopConfig {
-            node: self.inner.node.clone(),
-            secret: self.inner.secret.clone(),
-            endpoint_id: self.inner.endpoint_id,
-            mode: self.inner.directory_mode.clone(),
-            seeds: self.inner.bootstrap_peers.clone(),
-            directory: self.inner.directory.clone(),
-            name_table: self.inner.name_table.clone(),
-            machine_name: self.inner.machine_name.clone(),
-            hosted_records: self.inner.hosted_records.clone(),
-            next_revision: self.inner.next_revision.clone(),
-            health: self.inner.health.clone(),
-        })
+        let (reply_tx, reply_rx) = mpsc::channel();
+        if self
+            .inner
+            .control_tx
+            .try_send(ControlCommand::Renew { reply: reply_tx })
+            .is_err()
+        {
+            return 0;
+        }
+        reply_rx
+            .recv_timeout(self.inner.control_timeout)
+            .unwrap_or_default()
     }
 
     /// Create an escape hatch handle to call peerbus directly on a specific peer ID without directory resolution.
@@ -217,7 +251,8 @@ impl Agent {
                 None,
                 self.next_revision(),
                 Some(&self.inner.machine_name),
-            ),
+            )
+            .lease_expires_at_ms(self.lease_deadline()),
             &self.inner.secret,
         )?;
         self.register_hosted(&entry)?;
@@ -286,7 +321,8 @@ impl Agent {
                 Some(wire_type_hash::<Res>()),
                 self.next_revision(),
                 Some(&self.inner.machine_name),
-            ),
+            )
+            .lease_expires_at_ms(self.lease_deadline()),
             &self.inner.secret,
         )?;
         self.register_hosted(&entry)?;
@@ -333,7 +369,8 @@ impl Agent {
                 Some(wire_type_hash::<Ans>()),
                 self.next_revision(),
                 Some(&self.inner.machine_name),
-            ),
+            )
+            .lease_expires_at_ms(self.lease_deadline()),
             &self.inner.secret,
         )?;
         self.register_hosted(&entry)?;
@@ -380,7 +417,8 @@ impl Agent {
                 Some(wire_type_hash::<Ack>()),
                 self.next_revision(),
                 Some(&self.inner.machine_name),
-            ),
+            )
+            .lease_expires_at_ms(self.lease_deadline()),
             &self.inner.secret,
         )?;
         self.register_hosted(&entry)?;
@@ -433,7 +471,8 @@ impl Agent {
                 Some(wire_type_hash::<ServerMsg>()),
                 self.next_revision(),
                 Some(&self.inner.machine_name),
-            ),
+            )
+            .lease_expires_at_ms(self.lease_deadline()),
             &self.inner.secret,
         )?;
         self.register_hosted(&entry)?;
@@ -494,54 +533,43 @@ impl Agent {
             DirectoryMode::Replicated => self.inner.bootstrap_peers.clone(),
         };
 
-        let started = std::time::Instant::now();
-        let timeout = Duration::from_secs(5);
-        while !targets.is_empty() && started.elapsed() < timeout {
-            for target_id in &targets {
-                if let Ok(mut client) = self
-                    .inner
-                    .node
-                    .req_client::<DatapodMsg, DatapodMsg>(*target_id, RESOLUTION_TOPIC)
-                {
-                    let request = ResolveRequest::Query {
-                        topic: topic.to_string(),
-                        exchange,
-                        request_type_hash,
-                        response_type_hash,
-                    };
-                    if let Ok(request_bytes) = request.to_bytes() {
-                        let message = DatapodMsg::new(RESOLUTION_TYPE_HASH, request_bytes);
-                        if let Ok(sample) = client.call(&message)
-                            && let Ok(ResolveResponse::QueryResult {
-                                found: true,
-                                entry: Some(entry),
-                            }) = ResolveResponse::from_bytes(sample.payload())
-                        {
-                            if entry.topic() != topic {
-                                self.inner.health.reject_record();
-                                continue;
-                            }
-                            entry.validate_exchange(
-                                exchange,
-                                request_type_hash,
-                                response_type_hash,
-                            )?;
-                            self.inner.directory.register(entry.clone())?;
-                            return Ok(entry);
-                        }
-                    }
-                }
-            }
-            std::thread::yield_now();
+        if targets.is_empty() {
+            return Err(Error::ResolutionFailed(format!(
+                "topic '{topic}' has no configured resolution target"
+            )));
         }
-
-        Err(Error::ResolutionFailed(format!(
-            "topic '{topic}' could not be resolved within the agent composition"
-        )))
+        let request = ResolveRequest::Query {
+            topic: topic.to_string(),
+            exchange,
+            request_type_hash,
+            response_type_hash,
+        };
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.inner
+            .control_tx
+            .try_send(ControlCommand::Query {
+                target_ids: targets,
+                request,
+                reply: reply_tx,
+            })
+            .map_err(|error| Error::ControlPlane(error.to_string()))?;
+        reply_rx
+            .recv_timeout(self.inner.control_timeout)
+            .map_err(|_| Error::ControlTimeout(self.inner.control_timeout))?
     }
 
     fn next_revision(&self) -> u64 {
         self.inner.next_revision.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn lease_deadline(&self) -> u64 {
+        unix_time_ms().saturating_add(
+            self.inner
+                .lease_duration
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        )
     }
 
     fn register_hosted(&self, entry: &TopicEntry) -> Result<()> {
@@ -558,7 +586,7 @@ impl Agent {
         self.inner
             .name_table
             .sync_from_entries(&self.inner.directory.all_entries());
-        announce_entry(&self.inner, entry);
+        queue_control_command(&self.inner, ControlCommand::Announce(vec![entry.clone()]));
         Ok(())
     }
 }
@@ -571,57 +599,162 @@ fn resolution_targets(mode: &DirectoryMode, seeds: &[EndpointId]) -> Vec<Endpoin
 }
 
 fn send_control_request(
-    node: &Node,
-    target_id: EndpointId,
+    client: &mut ReqClient<DatapodMsg, DatapodMsg>,
     request: &ResolveRequest,
 ) -> Result<ResolveResponse> {
     let request_bytes = request.to_bytes()?;
     let message = DatapodMsg::new(RESOLUTION_TYPE_HASH, request_bytes);
-    let mut client = node.req_client::<DatapodMsg, DatapodMsg>(target_id, RESOLUTION_TOPIC)?;
     let sample = client.call(&message)?;
     ResolveResponse::from_bytes(sample.payload())
 }
 
-fn announce_entry(inner: &AgentInner, entry: &TopicEntry) {
-    announce_records(
-        &inner.node,
-        inner.endpoint_id,
-        &inner.directory_mode,
-        &inner.bootstrap_peers,
-        &inner.health,
-        std::slice::from_ref(entry),
-    );
+struct RemoteCall {
+    request: ResolveRequest,
+    reply: mpsc::Sender<Result<ResolveResponse>>,
+}
+
+struct RemoteWorker {
+    tx: mpsc::SyncSender<RemoteCall>,
+    join: std::thread::JoinHandle<()>,
+}
+
+struct ControlNetwork {
+    workers: HashMap<EndpointId, RemoteWorker>,
+}
+
+impl ControlNetwork {
+    fn new(config: &ControlLoopConfig) -> Self {
+        let mut workers = HashMap::new();
+        for target_id in resolution_targets(&config.mode, &config.seeds) {
+            if target_id == config.endpoint_id || workers.contains_key(&target_id) {
+                continue;
+            }
+            let (tx, rx) = mpsc::sync_channel::<RemoteCall>(1);
+            let node = config.node.clone();
+            let join = std::thread::Builder::new()
+                .name(format!("agentio-seed-{target_id}"))
+                .spawn(move || {
+                    let mut client =
+                        node.req_client::<DatapodMsg, DatapodMsg>(target_id, RESOLUTION_TOPIC);
+                    while let Ok(call) = rx.recv() {
+                        let mut response = match &mut client {
+                            Ok(client) => send_control_request(client, &call.request),
+                            Err(error) => Err(Error::ControlPlane(error.to_string())),
+                        };
+                        if response.is_err() {
+                            client = node
+                                .req_client::<DatapodMsg, DatapodMsg>(target_id, RESOLUTION_TOPIC);
+                            response = match &mut client {
+                                Ok(client) => send_control_request(client, &call.request),
+                                Err(error) => Err(Error::ControlPlane(error.to_string())),
+                            };
+                        }
+                        let _ = call.reply.send(response);
+                    }
+                });
+            match join {
+                Ok(join) => {
+                    workers.insert(target_id, RemoteWorker { tx, join });
+                }
+                Err(error) => {
+                    tracing::error!(%target_id, %error, "directory-target worker creation failed");
+                }
+            }
+        }
+        Self { workers }
+    }
+
+    fn request(
+        &self,
+        target_id: EndpointId,
+        request: ResolveRequest,
+    ) -> Result<mpsc::Receiver<Result<ResolveResponse>>> {
+        let worker = self.workers.get(&target_id).ok_or_else(|| {
+            Error::ControlPlane(format!(
+                "no control worker for directory target {target_id}"
+            ))
+        })?;
+        let (reply, response) = mpsc::channel();
+        worker
+            .tx
+            .try_send(RemoteCall { request, reply })
+            .map_err(|error| Error::ControlPlane(error.to_string()))?;
+        Ok(response)
+    }
+
+    fn shutdown(self) {
+        let workers: Vec<_> = self.workers.into_values().collect();
+        for worker in workers {
+            drop(worker.tx);
+            if worker.join.join().is_err() {
+                tracing::error!("agentio directory-target worker panicked");
+            }
+        }
+    }
+}
+
+fn queue_control_command(inner: &AgentInner, command: ControlCommand) {
+    if let Err(error) = inner.control_tx.try_send(command) {
+        inner.health.announcement_failed();
+        tracing::warn!(%error, "agentio control queue rejected an operation");
+    }
 }
 
 fn announce_records(
-    node: &Node,
+    network: &ControlNetwork,
     endpoint_id: EndpointId,
     mode: &DirectoryMode,
     seeds: &[EndpointId],
     health: &ControlPlaneHealth,
     entries: &[TopicEntry],
+    timeout: Duration,
 ) {
     let targets = resolution_targets(mode, seeds);
-    health.set_pending_announcements(targets.len().try_into().unwrap_or(u64::MAX));
     let request = ResolveRequest::Announce {
         entries: entries.to_vec(),
     };
-    let mut pending = targets.len();
+    let mut pending = Vec::new();
     for target_id in targets {
         if target_id == endpoint_id {
-            pending = pending.saturating_sub(1);
             continue;
         }
-        match send_control_request(node, target_id, &request) {
-            Ok(ResolveResponse::Announced { .. }) => health.announcement_succeeded(),
-            Ok(ResolveResponse::Rejected { message }) => {
-                health.announcement_failed();
-                tracing::warn!(%target_id, %message, "directory announcement rejected");
-            }
-            Ok(_) | Err(_) => health.announcement_failed(),
+        match network.request(target_id, request.clone()) {
+            Ok(response) => pending.push((target_id, response)),
+            Err(_) => health.announcement_failed(),
         }
-        pending = pending.saturating_sub(1);
-        health.set_pending_announcements(pending.try_into().unwrap_or(u64::MAX));
+    }
+    health.set_pending_announcements(pending.len().try_into().unwrap_or(u64::MAX));
+    let deadline = Instant::now() + internal_control_timeout(timeout);
+    while !pending.is_empty() && Instant::now() < deadline {
+        let mut progressed = false;
+        for index in (0..pending.len()).rev() {
+            match pending[index].1.try_recv() {
+                Ok(Ok(ResolveResponse::Announced { .. })) => {
+                    health.announcement_succeeded();
+                    pending.swap_remove(index);
+                    progressed = true;
+                }
+                Ok(Ok(ResolveResponse::Rejected { ref message })) => {
+                    health.announcement_failed();
+                    tracing::warn!(target_id = %pending[index].0, %message, "directory announcement rejected");
+                    pending.swap_remove(index);
+                    progressed = true;
+                }
+                Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
+                    health.announcement_failed();
+                    pending.swap_remove(index);
+                    progressed = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        health.set_pending_announcements(pending.len().try_into().unwrap_or(u64::MAX));
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    for _ in pending {
+        health.announcement_failed();
     }
     health.set_pending_announcements(0);
 }
@@ -643,72 +776,132 @@ pub(crate) fn withdraw_owned_entry(inner: &AgentInner, entry: &TopicEntry) {
     inner
         .name_table
         .sync_from_entries(&inner.directory.all_entries());
-    let request = ResolveRequest::Withdraw {
-        entries: vec![withdrawal],
-    };
-    for target_id in resolution_targets(&inner.directory_mode, &inner.bootstrap_peers) {
-        if target_id == inner.endpoint_id {
-            continue;
-        }
-        match send_control_request(&inner.node, target_id, &request) {
-            Ok(ResolveResponse::Withdrawn { .. }) => inner.health.announcement_succeeded(),
-            _ => inner.health.announcement_failed(),
-        }
-    }
+    queue_control_command(inner, ControlCommand::Withdraw(vec![withdrawal]));
 }
 
-pub(crate) fn reconcile_directory(
-    node: &Node,
-    endpoint_id: EndpointId,
-    mode: &DirectoryMode,
-    seeds: &[EndpointId],
-    directory: &Directory,
-    name_table: &NameTable,
-    health: &ControlPlaneHealth,
-) -> Result<usize> {
-    let targets = resolution_targets(mode, seeds);
+fn reconcile_directory(config: &ControlLoopConfig, network: &ControlNetwork) -> Result<usize> {
+    let targets = resolution_targets(&config.mode, &config.seeds);
+    let attempted = targets
+        .iter()
+        .filter(|id| **id != config.endpoint_id)
+        .count();
+    config
+        .health
+        .set_stale_seeds(attempted.try_into().unwrap_or(u64::MAX));
+    struct PageState {
+        target_id: EndpointId,
+        generation: Option<u64>,
+        offset: usize,
+        retries: usize,
+        response: mpsc::Receiver<Result<ResolveResponse>>,
+    }
+    let mut pages = Vec::new();
+    for target_id in targets
+        .iter()
+        .copied()
+        .filter(|id| *id != config.endpoint_id)
+    {
+        let request = ResolveRequest::List {
+            generation: None,
+            offset: 0,
+            limit: MAX_DIRECTORY_BATCH,
+        };
+        if let Ok(response) = network.request(target_id, request) {
+            pages.push(PageState {
+                target_id,
+                generation: None,
+                offset: 0,
+                retries: 0,
+                response,
+            });
+        }
+    }
     let mut learned = 0;
     let mut healthy = 0;
-    for target_id in targets.iter().copied().filter(|id| *id != endpoint_id) {
-        let mut offset = 0;
-        let mut seed_healthy = false;
-        loop {
-            let request = ResolveRequest::List {
-                offset,
-                limit: MAX_DIRECTORY_BATCH,
-            };
-            let response = send_control_request(node, target_id, &request);
-            let Ok(ResolveResponse::ListResult {
-                entries,
-                next_offset,
-            }) = response
-            else {
-                break;
-            };
-            seed_healthy = true;
-            for entry in entries {
-                match directory.register(entry) {
-                    Ok(inserted) => learned += usize::from(inserted),
-                    Err(Error::OwnershipConflict { .. }) => health.conflict(),
-                    Err(_) => health.reject_record(),
+    let deadline = Instant::now() + internal_control_timeout(config.control_timeout);
+    while !pages.is_empty() && Instant::now() < deadline {
+        let mut progressed = false;
+        for index in (0..pages.len()).rev() {
+            match pages[index].response.try_recv() {
+                Ok(Ok(ResolveResponse::ListResult {
+                    generation,
+                    entries,
+                    next_offset,
+                })) => {
+                    progressed = true;
+                    pages[index].generation = Some(generation);
+                    for entry in entries {
+                        match config.directory.register(entry) {
+                            Ok(inserted) => learned += usize::from(inserted),
+                            Err(
+                                Error::OwnershipConflict { .. } | Error::RevisionConflict { .. },
+                            ) => {
+                                config.health.conflict();
+                            }
+                            Err(_) => config.health.reject_record(),
+                        }
+                    }
+                    if let Some(next) = next_offset.filter(|next| *next > pages[index].offset) {
+                        pages[index].offset = next;
+                        let request = ResolveRequest::List {
+                            generation: pages[index].generation,
+                            offset: next,
+                            limit: MAX_DIRECTORY_BATCH,
+                        };
+                        match network.request(pages[index].target_id, request) {
+                            Ok(response) => pages[index].response = response,
+                            Err(_) => {
+                                pages.swap_remove(index);
+                            }
+                        }
+                    } else {
+                        healthy += 1;
+                        pages.swap_remove(index);
+                    }
                 }
+                Ok(Ok(ResolveResponse::Rejected { .. })) if pages[index].retries < 2 => {
+                    progressed = true;
+                    pages[index].retries += 1;
+                    pages[index].generation = None;
+                    pages[index].offset = 0;
+                    let request = ResolveRequest::List {
+                        generation: None,
+                        offset: 0,
+                        limit: MAX_DIRECTORY_BATCH,
+                    };
+                    match network.request(pages[index].target_id, request) {
+                        Ok(response) => pages[index].response = response,
+                        Err(_) => {
+                            pages.swap_remove(index);
+                        }
+                    }
+                }
+                Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
+                    progressed = true;
+                    pages.swap_remove(index);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
             }
-            let Some(next) = next_offset else {
-                break;
-            };
-            if next <= offset {
-                break;
-            }
-            offset = next;
         }
-        healthy += usize::from(seed_healthy);
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
-    let attempted = targets.iter().filter(|id| **id != endpoint_id).count();
+    let timed_out = !pages.is_empty();
     let stale = attempted.saturating_sub(healthy);
-    name_table.sync_from_entries(&directory.all_entries());
+    config
+        .health
+        .set_stale_seeds(stale.try_into().unwrap_or(u64::MAX));
+    config
+        .name_table
+        .sync_from_entries(&config.directory.all_entries());
     if healthy > 0 || attempted == 0 {
-        health.reconciled(unix_time_ms(), stale.try_into().unwrap_or(u64::MAX));
+        config
+            .health
+            .reconciled(unix_time_ms(), stale.try_into().unwrap_or(u64::MAX));
         Ok(learned)
+    } else if timed_out {
+        Err(Error::ControlTimeout(config.control_timeout))
     } else {
         Err(Error::ResolutionFailed(
             "directory reconciliation failed for every configured seed".to_string(),
@@ -728,32 +921,185 @@ pub(crate) struct ControlLoopConfig {
     pub(crate) hosted_records: Arc<Mutex<std::collections::HashMap<HostedKey, HostedRecord>>>,
     pub(crate) next_revision: Arc<AtomicU64>,
     pub(crate) health: Arc<ControlPlaneHealth>,
+    pub(crate) lease_duration: Duration,
+    pub(crate) control_timeout: Duration,
 }
 
 pub(crate) fn run_control_loop(
     config: ControlLoopConfig,
+    command_rx: mpsc::Receiver<ControlCommand>,
     shutdown_rx: std::sync::mpsc::Receiver<()>,
 ) {
-    const CONTROL_INTERVAL: Duration = Duration::from_secs(5);
+    let network = ControlNetwork::new(&config);
+    let control_interval = (config.lease_duration / 3)
+        .max(Duration::from_millis(10))
+        .min(Duration::from_secs(5));
+    let mut next_maintenance = Instant::now();
     loop {
-        let _ = reconcile_directory(
-            &config.node,
+        match shutdown_rx.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        let wait = next_maintenance
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(50));
+        match command_rx.recv_timeout(wait) {
+            Ok(command) => {
+                let ran_maintenance = matches!(
+                    &command,
+                    ControlCommand::Reconcile { .. } | ControlCommand::Renew { .. }
+                );
+                handle_control_command(&config, &network, command);
+                if ran_maintenance {
+                    next_maintenance = Instant::now() + control_interval;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if Instant::now() >= next_maintenance {
+            let _ = reconcile_directory(&config, &network);
+            renew_hosted_records(&config, &network);
+            next_maintenance = Instant::now() + control_interval;
+        }
+    }
+    network.shutdown();
+}
+
+fn handle_control_command(
+    config: &ControlLoopConfig,
+    network: &ControlNetwork,
+    command: ControlCommand,
+) {
+    match command {
+        ControlCommand::Query {
+            target_ids,
+            request,
+            reply,
+        } => {
+            let _ = reply.send(query_directory(config, network, &target_ids, &request));
+        }
+        ControlCommand::Reconcile { reply } => {
+            let result = reconcile_directory(config, network);
+            let _ = reply.send(result);
+        }
+        ControlCommand::Announce(entries) => announce_records(
+            network,
             config.endpoint_id,
             &config.mode,
             &config.seeds,
-            &config.directory,
-            &config.name_table,
             &config.health,
-        );
-        renew_hosted_records(&config);
-        match shutdown_rx.recv_timeout(CONTROL_INTERVAL) {
-            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            &entries,
+            config.control_timeout,
+        ),
+        ControlCommand::Withdraw(entries) => {
+            let request = ResolveRequest::Withdraw { entries };
+            let mut pending = Vec::new();
+            for target_id in resolution_targets(&config.mode, &config.seeds) {
+                if target_id == config.endpoint_id {
+                    continue;
+                }
+                match network.request(target_id, request.clone()) {
+                    Ok(response) => pending.push(response),
+                    Err(_) => config.health.announcement_failed(),
+                }
+            }
+            let deadline = Instant::now() + internal_control_timeout(config.control_timeout);
+            for response in pending {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match response.recv_timeout(remaining) {
+                    Ok(Ok(ResolveResponse::Withdrawn { .. })) => {
+                        config.health.announcement_succeeded();
+                    }
+                    _ => config.health.announcement_failed(),
+                }
+            }
+        }
+        ControlCommand::Renew { reply } => {
+            let _ = reply.send(renew_hosted_records(config, network));
         }
     }
 }
 
-fn renew_hosted_records(config: &ControlLoopConfig) -> usize {
+fn query_directory(
+    config: &ControlLoopConfig,
+    network: &ControlNetwork,
+    target_ids: &[EndpointId],
+    request: &ResolveRequest,
+) -> Result<TopicEntry> {
+    let ResolveRequest::Query {
+        topic,
+        exchange,
+        request_type_hash,
+        response_type_hash,
+    } = request
+    else {
+        return Err(Error::ControlPlane(
+            "query command carried a non-query request".to_string(),
+        ));
+    };
+    let internal_timeout = internal_control_timeout(config.control_timeout);
+    let deadline = Instant::now() + internal_timeout;
+    let mut pending = Vec::new();
+    for target_id in target_ids {
+        if let Ok(response) = network.request(*target_id, request.clone()) {
+            pending.push((*target_id, response));
+        }
+    }
+    while Instant::now() < deadline && !pending.is_empty() {
+        let mut progressed = false;
+        for index in (0..pending.len()).rev() {
+            match pending[index].1.try_recv() {
+                Ok(Ok(ResolveResponse::QueryResult {
+                    found: true,
+                    entry: Some(entry),
+                })) => {
+                    if entry.topic() != topic {
+                        config.health.reject_record();
+                        pending.swap_remove(index);
+                        progressed = true;
+                        continue;
+                    }
+                    entry.validate_exchange(*exchange, *request_type_hash, *response_type_hash)?;
+                    config.directory.register(entry.clone())?;
+                    config
+                        .name_table
+                        .sync_from_entries(&config.directory.all_entries());
+                    return Ok(entry);
+                }
+                Ok(Ok(ResolveResponse::QueryResult { .. })) => {
+                    let target_id = pending[index].0;
+                    match network.request(target_id, request.clone()) {
+                        Ok(response) => pending[index].1 = response,
+                        Err(_) => {
+                            pending.swap_remove(index);
+                        }
+                    }
+                    progressed = true;
+                }
+                Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
+                    let target_id = pending[index].0;
+                    match network.request(target_id, request.clone()) {
+                        Ok(response) => pending[index].1 = response,
+                        Err(_) => {
+                            pending.swap_remove(index);
+                        }
+                    }
+                    progressed = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    Err(Error::ResolutionFailed(format!(
+        "topic '{topic}' could not be resolved within the agent composition"
+    )))
+}
+
+fn renew_hosted_records(config: &ControlLoopConfig, network: &ControlNetwork) -> usize {
     let hosted: Vec<_> = config
         .hosted_records
         .lock()
@@ -771,6 +1117,15 @@ fn renew_hosted_records(config: &ControlLoopConfig) -> usize {
             record.response_type_hash,
             revision,
             Some(&config.machine_name),
+        )
+        .lease_expires_at_ms(
+            unix_time_ms().saturating_add(
+                config
+                    .lease_duration
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            ),
         );
         match TopicEntry::signed(spec, &config.secret) {
             Ok(entry) => {
@@ -783,12 +1138,13 @@ fn renew_hosted_records(config: &ControlLoopConfig) -> usize {
     }
     for batch in renewed.chunks(MAX_DIRECTORY_BATCH) {
         announce_records(
-            &config.node,
+            network,
             config.endpoint_id,
             &config.mode,
             &config.seeds,
             &config.health,
             batch,
+            config.control_timeout,
         );
     }
     config
@@ -835,20 +1191,33 @@ pub(crate) fn run_resolution_loop(
                                 entry,
                             }
                         }
-                        ResolveRequest::List { offset, limit } => {
-                            let entries = directory.all_entries();
-                            let end = offset.saturating_add(limit).min(entries.len());
-                            let page = entries.get(offset..end).unwrap_or(&[]).to_vec();
-                            ResolveResponse::ListResult {
-                                entries: page,
-                                next_offset: (end < entries.len()).then_some(end),
-                            }
-                        }
+                        ResolveRequest::List {
+                            generation,
+                            offset,
+                            limit,
+                        } => match directory.snapshot_page(generation, offset, limit) {
+                            Ok((generation, entries, next_offset)) => ResolveResponse::ListResult {
+                                generation,
+                                entries,
+                                next_offset,
+                            },
+                            Err(error) => ResolveResponse::Rejected {
+                                message: error.to_string(),
+                            },
+                        },
                         ResolveRequest::Announce { entries } => {
                             match directory.register_many(entries) {
                                 Ok(count) => ResolveResponse::Announced { count },
                                 Err(error) => {
-                                    health.reject_record();
+                                    if matches!(
+                                        error,
+                                        Error::OwnershipConflict { .. }
+                                            | Error::RevisionConflict { .. }
+                                    ) {
+                                        health.conflict();
+                                    } else {
+                                        health.reject_record();
+                                    }
                                     ResolveResponse::Rejected {
                                         message: error.to_string(),
                                     }

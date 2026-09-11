@@ -3,11 +3,19 @@
 //! `agentio` provides identity management (`did:key`), directory tracking, topic referral resolution,
 //! topic namespacing, and an ergonomic `Agent` API for agent composition across machines.
 
+#![warn(missing_docs)]
+
+/// Agent construction, lifecycle, and typed exchange APIs.
 pub mod agent;
+/// Authenticated directory records, storage, health, and wire protocol.
 pub mod directory;
+/// Error and result types.
 pub mod error;
+/// Direct endpoint-addressed escape hatches.
 pub mod escape;
+/// Identity loading, persistence, and DID helpers.
 pub mod identity;
+/// Topic normalization and machine-name mappings.
 pub mod naming;
 
 pub use agent::{Agent, AgentBuilder, DirectoryMode, Registered, TryIntoBootstrapPeer};
@@ -23,4 +31,4 @@ pub use identity::{
     IdentitySource, default_keys_dir, did_key, load_or_generate_key, resolve_identity, save_did_key,
 };
 pub use naming::{Machine, NameTable, normalize_topic, qualify_participant_topic};
-pub use peerbus::DatapodMsg;
+pub use peerbus::{DatapodMsg, LocalConfig};

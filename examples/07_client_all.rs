@@ -1,7 +1,6 @@
 use agentio::{Agent, DirectoryMode, IdentitySource};
 use datapod::datapod;
 use std::env;
-use std::thread;
 use std::time::Duration;
 
 // 1. Pub/Sub Payload
@@ -102,10 +101,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let client_agent = builder.build()?;
-    let _ = client_agent.wait_for_direct_addresses(Duration::from_secs(5));
+    client_agent.wait_for_direct_addresses(Duration::from_secs(5))?;
     println!("Client Endpoint ID: {}", client_agent.endpoint_id());
-    println!("  [*] Waiting 1s for transport initialization...\n");
-    thread::sleep(Duration::from_secs(1));
+    client_agent.reconcile_now()?;
+    let mut failures = Vec::new();
 
     // ------------------------------------------------------------------------
     // Pattern 1: Pub / Sub
@@ -136,9 +135,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  [OK] Pub/Sub test passed.\n");
             } else {
                 println!("  [FAIL] Timed out waiting for telemetry samples.\n");
+                failures.push("pub/sub timed out".to_string());
             }
         }
-        Err(e) => println!("  [FAIL] Could not subscribe to /telemetry: {}\n", e),
+        Err(e) => {
+            println!("  [FAIL] Could not subscribe to /telemetry: {}\n", e);
+            failures.push(e.to_string());
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -155,12 +158,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 assert_eq!(res.header().sum, 350);
                 println!("  [OK] Req/Res test passed.\n");
             }
-            Err(e) => println!("  [FAIL] Req/Res RPC call failed: {}\n", e),
+            Err(e) => {
+                println!("  [FAIL] Req/Res RPC call failed: {}\n", e);
+                failures.push(e.to_string());
+            }
         },
-        Err(e) => println!(
-            "  [FAIL] Could not create req_client for /service/add: {}\n",
-            e
-        ),
+        Err(e) => {
+            println!(
+                "  [FAIL] Could not create req_client for /service/add: {}\n",
+                e
+            );
+            failures.push(e.to_string());
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -174,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) {
             Ok(mut answers) => {
                 let mut hits = Vec::new();
-                while let Ok(Some(hit)) = answers.next() {
+                while let Some(hit) = answers.next()? {
                     hits.push(hit.header().value);
                 }
                 println!(
@@ -184,12 +193,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 assert_eq!(hits, vec![50, 51, 52, 53]);
                 println!("  [OK] Que/Ans test passed.\n");
             }
-            Err(e) => println!("  [FAIL] Que/Ans query send failed: {}\n", e),
+            Err(e) => {
+                println!("  [FAIL] Que/Ans query send failed: {}\n", e);
+                failures.push(e.to_string());
+            }
         },
-        Err(e) => println!(
-            "  [FAIL] Could not create que_client for /query/range: {}\n",
-            e
-        ),
+        Err(e) => {
+            println!(
+                "  [FAIL] Could not create que_client for /query/range: {}\n",
+                e
+            );
+            failures.push(e.to_string());
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -199,9 +214,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match client_agent.put_client::<DataBlock, UploadResult>("/upload/blocks") {
         Ok(mut put_cli) => match put_cli.open() {
             Ok(mut upload) => {
-                let _ = upload.send(&DataBlock { bytes_count: 1024 });
-                let _ = upload.send(&DataBlock { bytes_count: 2048 });
-                let _ = upload.send(&DataBlock { bytes_count: 4096 });
+                upload.send(&DataBlock { bytes_count: 1024 })?;
+                upload.send(&DataBlock { bytes_count: 2048 })?;
+                upload.send(&DataBlock { bytes_count: 4096 })?;
                 match upload.finish() {
                     Ok(ack) => {
                         println!(
@@ -213,15 +228,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         assert_eq!(ack.header().total_bytes, 7168);
                         println!("  [OK] Put/Ack test passed.\n");
                     }
-                    Err(e) => println!("  [FAIL] Put/Ack finish failed: {}\n", e),
+                    Err(e) => {
+                        println!("  [FAIL] Put/Ack finish failed: {}\n", e);
+                        failures.push(e.to_string());
+                    }
                 }
             }
-            Err(e) => println!("  [FAIL] Put/Ack open upload failed: {}\n", e),
+            Err(e) => {
+                println!("  [FAIL] Put/Ack open upload failed: {}\n", e);
+                failures.push(e.to_string());
+            }
         },
-        Err(e) => println!(
-            "  [FAIL] Could not create put_client for /upload/blocks: {}\n",
-            e
-        ),
+        Err(e) => {
+            println!(
+                "  [FAIL] Could not create put_client for /upload/blocks: {}\n",
+                e
+            );
+            failures.push(e.to_string());
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -231,12 +255,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match client_agent.pip_client::<AudioChunk, AudioFeedback>("/stream/audio") {
         Ok(mut pip_cli) => match pip_cli.open() {
             Ok(mut pip) => {
-                let _ = pip.send(&AudioChunk { sample_id: 5 });
-                let _ = pip.send(&AudioChunk { sample_id: 6 });
-                let _ = pip.finish_send();
+                pip.send(&AudioChunk { sample_id: 5 })?;
+                pip.send(&AudioChunk { sample_id: 6 })?;
+                pip.finish_send()?;
 
                 let mut echoes = Vec::new();
-                while let Ok(Some(reply)) = pip.next() {
+                while let Some(reply) = pip.next()? {
                     echoes.push(reply.header().echo_id);
                 }
                 println!(
@@ -246,12 +270,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 assert_eq!(echoes, vec![500, 600]);
                 println!("  [OK] Pip streaming test passed.\n");
             }
-            Err(e) => println!("  [FAIL] Pip stream open failed: {}\n", e),
+            Err(e) => {
+                println!("  [FAIL] Pip stream open failed: {}\n", e);
+                failures.push(e.to_string());
+            }
         },
-        Err(e) => println!(
-            "  [FAIL] Could not create pip_client for /stream/audio: {}\n",
-            e
-        ),
+        Err(e) => {
+            println!(
+                "  [FAIL] Could not create pip_client for /stream/audio: {}\n",
+                e
+            );
+            failures.push(e.to_string());
+        }
+    }
+
+    if !failures.is_empty() {
+        return Err(failures.join("; ").into());
     }
 
     println!("============================================================");

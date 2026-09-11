@@ -1,0 +1,8 @@
+[package]
+name = "agentio-example-messages"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }

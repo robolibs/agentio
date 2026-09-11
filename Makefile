@@ -10,6 +10,8 @@ TOP_DIR := $(CURDIR)
 CARGO := cargo
 EXAMPLE ?= 01_single_machine
 ARGS ?=
+CAMERA_DEVICE ?= /dev/video0
+SERVER ?=
 PREFIX ?= $(HOME)/.local
 AUDIT_DB ?= $(TOP_DIR)/target/advisory-db
 AUDIT_IGNORES ?= --ignore RUSTSEC-2023-0071
@@ -20,7 +22,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t integration remote-test examples-smoke audit check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
+.PHONY: build b compile c run r camera-publisher camera-subscriber test t integration agent-test directory-test remote-test examples-smoke audit check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
 
 build:
 	@$(CARGO) build --lib
@@ -38,16 +40,32 @@ run:
 
 r: run
 
+camera-publisher:
+	@$(CARGO) run --example 10_camera_publisher -- --device "$(CAMERA_DEVICE)" $(ARGS)
+
+camera-subscriber:
+	@if [ -z "$(SERVER)" ]; then \
+		echo "SERVER is required (Endpoint ID or did:key)"; \
+		exit 1; \
+	fi
+	@$(CARGO) run --example 11_camera_subscriber -- "$(SERVER)" $(ARGS)
+
 test:
-	@$(CARGO) test --all-targets
+	@$(CARGO) test --all-targets -- --test-threads=1
 
 t: test
 
 integration:
-	@$(CARGO) test --tests
+	@$(CARGO) test --tests -- --test-threads=1
+
+agent-test:
+	@$(CARGO) test --test agent_local -- --test-threads=1
+
+directory-test:
+	@$(CARGO) test --test directory_reconciliation -- --test-threads=1
 
 remote-test:
-	@$(CARGO) test --test referral_remote
+	@$(CARGO) test --test referral_remote -- --test-threads=1
 
 examples-smoke:
 	@$(CARGO) run --example 05_all_exchanges
@@ -77,7 +95,7 @@ rustdoc:
 	@RUSTDOCFLAGS="-Dwarnings" $(CARGO) doc --all-features --no-deps
 
 test-all:
-	@$(CARGO) test --all-targets --all-features
+	@$(CARGO) test --all-targets --all-features -- --test-threads=1
 
 clean:
 	@$(CARGO) clean
@@ -103,8 +121,12 @@ help:
 	@echo "  build        Build the library"
 	@echo "  compile      Clean and rebuild"
 	@echo "  run          Run an example (EXAMPLE=name ARGS='...')"
+	@echo "  camera-publisher Publish RGB frames from CAMERA_DEVICE"
+	@echo "  camera-subscriber Subscribe using SERVER=<did:key>"
 	@echo "  test         Run all tests"
 	@echo "  integration  Run integration tests"
+	@echo "  agent-test   Run local and forced-QUIC Agent tests"
+	@echo "  directory-test Run reconciliation and lease tests"
 	@echo "  remote-test  Run the forced-QUIC referral test"
 	@echo "  examples-smoke Run the bounded exchange example"
 	@echo "  audit        Scan dependencies for security advisories"

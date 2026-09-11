@@ -2,7 +2,7 @@ use peerbus::EndpointId;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use crate::directory::TopicEntry;
+use crate::directory::{Directory, TopicEntry};
 
 #[derive(Debug, Default)]
 struct NameMaps {
@@ -14,15 +14,26 @@ struct NameMaps {
 }
 
 #[derive(Debug, Clone, Default)]
+/// Bidirectional mapping between machine names and endpoint identifiers.
 pub struct NameTable {
     maps: Arc<RwLock<NameMaps>>,
+    directory: Option<Directory>,
 }
 
 impl NameTable {
+    /// Create an empty standalone name table.
     pub fn new() -> Self {
         Self::default()
     }
 
+    pub(crate) fn with_directory(directory: Directory) -> Self {
+        Self {
+            maps: Arc::new(RwLock::new(NameMaps::default())),
+            directory: Some(directory),
+        }
+    }
+
+    /// Register an explicit name-to-endpoint mapping.
     pub fn register(&self, name: impl Into<String>, endpoint_id: EndpointId) {
         let name = name.into();
         let mut maps = self.maps.write().unwrap();
@@ -49,11 +60,15 @@ impl NameTable {
         rebuild(&mut maps);
     }
 
+    /// Resolve a machine name to its endpoint identifier.
     pub fn resolve_name(&self, name: &str) -> Option<EndpointId> {
+        self.refresh_from_directory();
         self.maps.read().unwrap().name_to_id.get(name).copied()
     }
 
+    /// Return the current name for an endpoint identifier.
     pub fn get_name(&self, endpoint_id: &EndpointId) -> Option<String> {
+        self.refresh_from_directory();
         self.maps
             .read()
             .unwrap()
@@ -62,8 +77,17 @@ impl NameTable {
             .cloned()
     }
 
+    /// Return a snapshot of all current mappings.
     pub fn all_mappings(&self) -> HashMap<String, EndpointId> {
+        self.refresh_from_directory();
         self.maps.read().unwrap().name_to_id.clone()
+    }
+
+    fn refresh_from_directory(&self) {
+        let Some(directory) = &self.directory else {
+            return;
+        };
+        self.sync_from_entries(&directory.all_entries());
     }
 }
 
@@ -113,6 +137,7 @@ fn rebuild(maps: &mut NameMaps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::directory::{ExchangeKind, TopicEntry, TopicRecordSpec, unix_time_ms};
     use peerbus::SecretKey;
 
     #[test]
@@ -146,5 +171,23 @@ mod tests {
         assert_eq!(table.resolve_name("old"), None);
         assert_eq!(table.resolve_name("new"), Some(endpoint));
         assert_eq!(table.get_name(&endpoint).as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn expired_last_record_removes_directory_mapping() {
+        let directory = Directory::new();
+        let table = NameTable::with_directory(directory.clone());
+        let secret = SecretKey::generate();
+        let deadline = unix_time_ms().saturating_add(1_000);
+        let entry = TopicEntry::signed(
+            TopicRecordSpec::new("/mapped", ExchangeKind::PubSub, 1, None, 1, Some("remote"))
+                .lease_expires_at_ms(deadline),
+            &secret,
+        )
+        .unwrap();
+        directory.register(entry).unwrap();
+        assert_eq!(table.resolve_name("remote"), Some(secret.public()));
+        directory.prune_expired_at(deadline);
+        assert_eq!(table.resolve_name("remote"), None);
     }
 }

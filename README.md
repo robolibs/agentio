@@ -19,8 +19,11 @@ owner signature. Received announcements and snapshots are verified before
 insertion. Older revisions, expired records, invalid signatures, type
 mismatches, and competing live owners are rejected. Hosted records are renewed;
 dropping the returned `Registered` publisher/server handle sends a signed
-withdrawal. A missed announcement can be recovered with `reconcile_now` or the
-periodic reconciliation worker.
+withdrawal bound to the exact signed record it removes. Startup and periodic
+reconciliation recover missed announcements; `reconcile_now` also triggers it
+on demand.
+Snapshot pages carry a generation number, so a mutation during pagination
+restarts the snapshot instead of mixing two directory states.
 
 ## Membership and authorization
 
@@ -45,10 +48,20 @@ reserved `__agentio_resolve` req/res service. It validates the returned topic,
 exchange family, and type hashes before dialing the owner directly. `by_id`
 bypasses directory resolution but not peerbus transport authorization.
 
+Each configured directory target has one bounded worker and one persistent
+control client. Unreachable seeds therefore do not serialize calls to healthy
+seeds. `control_timeout` bounds the caller-visible wait; the target worker may
+still be completing the underlying peerbus call. `lease_duration` controls
+record expiry and the automatic renewal cadence. The defaults are six seconds
+for control calls and 30 seconds for leases.
+
 Peerbus can use shared memory for co-located endpoints and iroh QUIC for remote
 endpoints. `skip_shm()` forces QUIC; `no_relay()` disables relay fallback.
 `wait_for_direct_addresses` provides bounded address readiness for remote
-setups.
+setups. Rust transport type hashes include the Rust type path, so separate
+binaries must import shared message definitions from the same crate. The heavy
+and camera examples use the small `examples/shared_types` support crate for
+this reason.
 
 ## Identities
 
@@ -112,14 +125,37 @@ make run
 make run EXAMPLE=05_all_exchanges
 make run EXAMPLE=07_client_all ARGS='<SERVER_DID_KEY>'
 make integration
+make agent-test
+make directory-test
 make remote-test
 make examples-smoke
 make verify
 ```
 
-Examples 06/07 are the two-process exchange demos. Examples 08/09 are
-throughput demos that measure actual received payload bytes and validate their
-content; they are not repeatable statistical benchmarks.
+## Camera stream example
+
+Examples 10/11 publish RGB frames from a Linux V4L2 camera and subscribe from a
+second Agent. They use GStreamer for camera capture and optional display, while
+the frame payload travels through agentio over iroh by default.
+
+```bash
+# Terminal 1: copy the printed did:key value
+make camera-publisher CAMERA_DEVICE=/dev/video0
+
+# Terminal 2: receive frames and open a display window
+make camera-subscriber SERVER='<PUBLISHER_DID_KEY>' ARGS='--display'
+```
+
+Pass `ARGS='--frames 30'` for a bounded headless receiver, or `ARGS='--use-shm'`
+to either target when shared-memory transport is desired. Camera access
+requires read/write permission on the selected `/dev/video*` device.
+`ARGS='--test-pattern'` on the publisher replaces the camera with a GStreamer
+test pattern for transport testing.
+
+Examples 06/07 are the two-process exchange demos. Examples 08/09 are bounded
+on every remote-controlled allocation and are throughput demos that measure
+actual received payload bytes and validate their content; they are not
+repeatable statistical benchmarks.
 
 `agentio` is library-only. CI builds, tests, lints, and documents the library;
 it does not package a nonexistent application binary. Source releases remain a
@@ -129,4 +165,6 @@ The audit target explicitly reports but does not block on
 `RUSTSEC-2023-0071`, a medium-severity timing advisory in `rsa` with no fixed
 release. Agentio's directory protocol uses Ed25519, not RSA. Applications that
 use RSA through the re-exported authbox surface must assess that advisory for
-their own threat model.
+their own threat model. The current dependency graph also produces a
+non-vulnerability maintenance warning for transitive `paste 1.0.15` through
+iroh's networking stack.

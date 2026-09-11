@@ -1,4 +1,5 @@
 pub use authbox::did;
+/// Identity sources and key persistence.
 pub mod source;
 
 use crate::error::{Error, Result};
