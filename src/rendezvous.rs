@@ -152,11 +152,7 @@ pub(crate) fn withdraw(endpoint_id: &EndpointId) {
 }
 
 fn pid_alive(pid: u32) -> bool {
-    if cfg!(target_os = "linux") {
-        std::path::Path::new("/proc").join(pid.to_string()).exists()
-    } else {
-        true
-    }
+    std::path::Path::new("/proc").join(pid.to_string()).exists()
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
