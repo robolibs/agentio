@@ -312,7 +312,8 @@ impl Agent {
         <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let server = self.inner.node.req_server::<Req, Res>(&normalized)?;
+        let mut server = self.inner.node.req_server::<Req, Res>(&normalized)?;
+        drop_predecessor_traffic(&normalized, || Ok(server.take()?.is_some()))?;
         let entry = TopicEntry::signed(
             TopicRecordSpec::new(
                 &normalized,
@@ -360,7 +361,8 @@ impl Agent {
         <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let server = self.inner.node.que_server::<Que, Ans>(&normalized)?;
+        let mut server = self.inner.node.que_server::<Que, Ans>(&normalized)?;
+        drop_predecessor_traffic(&normalized, || Ok(server.take()?.is_some()))?;
         let entry = TopicEntry::signed(
             TopicRecordSpec::new(
                 &normalized,
@@ -408,7 +410,8 @@ impl Agent {
         <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
-        let server = self.inner.node.put_server::<Put, Ack>(&normalized)?;
+        let mut server = self.inner.node.put_server::<Put, Ack>(&normalized)?;
+        drop_predecessor_traffic(&normalized, || Ok(server.take()?.is_some()))?;
         let entry = TopicEntry::signed(
             TopicRecordSpec::new(
                 &normalized,
@@ -1273,4 +1276,19 @@ pub(crate) fn run_resolution_loop(
             }
         }
     }
+}
+
+/// A freshly bound service sees the topic ring's history: traffic sent to
+/// whoever served the topic before this agent started. None of it was
+/// addressed to this server, so it is dropped unanswered at bind instead of
+/// being served a second time by a restarted host.
+fn drop_predecessor_traffic(topic: &str, mut take_one: impl FnMut() -> Result<bool>) -> Result<()> {
+    let mut dropped = 0usize;
+    while take_one()? {
+        dropped += 1;
+    }
+    if dropped > 0 {
+        tracing::debug!(topic, dropped, "dropped traffic that predates this server");
+    }
+    Ok(())
 }
