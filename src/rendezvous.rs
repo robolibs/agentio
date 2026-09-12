@@ -74,7 +74,9 @@ pub fn rendezvous_dir() -> PathBuf {
         .join("agents")
 }
 
-/// Every live agent on this host, oldest first. Stale records are removed.
+/// Every live agent on this host, oldest first. Records of dead processes
+/// are removed here and whenever an agent publishes its own, so a signalled
+/// process never leaves a file behind for longer than the next agent start.
 pub fn local_agents() -> Vec<LocalAgent> {
     let Ok(dir) = std::fs::read_dir(rendezvous_dir()) else {
         return Vec::new();
@@ -139,6 +141,7 @@ pub(crate) fn publish(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let _ = local_agents();
     let json =
         serde_json::to_string_pretty(&record).map_err(|error| Error::Format(error.to_string()))?;
     let tmp = path.with_extension("json.tmp");

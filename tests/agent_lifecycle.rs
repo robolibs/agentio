@@ -122,6 +122,8 @@ mod rendezvous {
             .build()
             .unwrap();
         assert!(host.rendezvous_path().is_some_and(|p| p.exists()));
+        // Building the host pruned the dead record before any listing.
+        assert!(!dir.path().join("dead.json").exists());
         let found = find_local("rendezvous-host").expect("the live host is listed");
         assert_eq!(found.endpoint_id().unwrap(), host.endpoint_id());
         assert_eq!(found.participant.as_deref(), Some("sim"));
