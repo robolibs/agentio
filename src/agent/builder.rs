@@ -313,7 +313,7 @@ impl AgentBuilder {
             endpoint_id,
             directory_mode: self.directory_mode,
             bootstrap_peers: self.bootstrap_peers,
-            allowed_peers: self.allowed_peers,
+            allowed_peers: Mutex::new(self.allowed_peers),
             allow_any_peer: self.allow_any_peer,
             no_relay: self.no_relay,
             skip_shm: self.skip_shm,

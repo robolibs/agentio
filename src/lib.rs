@@ -17,10 +17,15 @@ pub mod escape;
 pub mod identity;
 /// Topic normalization and machine-name mappings.
 pub mod naming;
+/// Python bindings (pyo3), behind the `python` feature.
+#[cfg(feature = "python")]
+pub mod python;
 /// Host-local rendezvous records of live agents.
 pub mod rendezvous;
 
-pub use agent::{Agent, AgentBuilder, DirectoryMode, Registered, TryIntoBootstrapPeer};
+pub use agent::{
+    Agent, AgentBuilder, DirectoryMode, HostedGuard, Registered, TryIntoBootstrapPeer,
+};
 pub use authbox;
 pub use authbox::did;
 pub use directory::{

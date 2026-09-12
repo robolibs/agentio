@@ -119,3 +119,55 @@ fn unlisted_forced_quic_client_is_rejected() {
         );
     }
 }
+
+/// A live agent opens to one more peer: the same unlisted client gets
+/// nothing, then `allow_peer` lets its next connection through.
+#[test]
+fn runtime_allow_peer_admits_an_unlisted_client() {
+    let server_key = SecretKey::generate();
+    let client_key = SecretKey::generate();
+    let server_id = server_key.public();
+    let client_id = client_key.public();
+    let server = Agent::builder()
+        .identity(server_key)
+        .skip_shm()
+        .build()
+        .unwrap();
+    let client = Agent::builder()
+        .identity(client_key)
+        .directory(DirectoryMode::FrontDoor(server_id))
+        .allow_peer(server_id)
+        .skip_shm()
+        .control_timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    server
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    client
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    let mut publisher = server.publish::<RemoteSample>("/remote/admitted").unwrap();
+    assert!(!server.allows_peer(&client_id));
+    assert!(
+        client
+            .subscribe::<RemoteSample>("/remote/admitted")
+            .is_err()
+    );
+
+    server.allow_peer(client_id).unwrap();
+    assert!(server.allows_peer(&client_id));
+    assert_eq!(server.allowed_peers(), vec![client_id]);
+    let mut subscriber = client
+        .subscribe::<RemoteSample>("/remote/admitted")
+        .unwrap();
+    let mut received = None;
+    for _ in 0..20 {
+        publisher.send(&RemoteSample { sequence: 5 }).unwrap();
+        if let Some(sample) = subscriber.recv_timeout(Duration::from_millis(250)).unwrap() {
+            received = Some(sample);
+            break;
+        }
+    }
+    assert_eq!(received.expect("admitted sample").header().sequence, 5);
+}

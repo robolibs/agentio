@@ -10,4 +10,4 @@ pub mod registered;
 pub use builder::AgentBuilder;
 pub use core::Agent;
 pub use mode::{DirectoryMode, TryIntoBootstrapPeer};
-pub use registered::Registered;
+pub use registered::{HostedGuard, Registered};

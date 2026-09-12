@@ -148,3 +148,29 @@ mod rendezvous {
         unsafe { std::env::remove_var("AGENTIO_RENDEZVOUS_DIR") };
     }
 }
+
+mod parts {
+    use agentio::{Agent, DirectoryMode, ExchangeKind, IdentitySource};
+    use peerbus::DatapodMsg;
+
+    /// The bare handle keeps working after the split; the record lives
+    /// exactly as long as the guard.
+    #[test]
+    fn a_split_handle_hosts_until_its_guard_drops() {
+        let agent = Agent::builder()
+            .identity(IdentitySource::Random)
+            .directory(DirectoryMode::Replicated)
+            .allow_any_peer()
+            .build()
+            .unwrap();
+        let registered = agent.publish::<DatapodMsg>("/parts/feed").unwrap();
+        assert_eq!(registered.entry().exchange(), ExchangeKind::PubSub);
+        let (mut publisher, guard) = registered.into_parts();
+        assert_eq!(guard.entry().topic(), "/parts/feed");
+        assert!(agent.resolve_topic("/parts/feed").is_ok());
+        publisher.send(&DatapodMsg::new(1, vec![1])).unwrap();
+        drop(guard);
+        assert!(agent.resolve_topic("/parts/feed").is_err());
+        publisher.send(&DatapodMsg::new(2, vec![2])).unwrap();
+    }
+}

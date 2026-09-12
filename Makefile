@@ -22,7 +22,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r camera-publisher camera-subscriber test t integration agent-test directory-test remote-test examples-smoke audit check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h
+.PHONY: build b compile c run r camera-publisher camera-subscriber test t integration agent-test directory-test remote-test examples-smoke audit check check-all test-all clippy rustdoc fmt fmt-check lock clean verify release help h bind-py
 
 build:
 	@$(CARGO) build --lib
@@ -78,6 +78,9 @@ check:
 
 check-all:
 	@$(CARGO) check --all-targets --all-features
+
+bind-py:
+	@maturin build --features python
 
 fmt:
 	@$(CARGO) fmt --package $(PROJECT_NAME)

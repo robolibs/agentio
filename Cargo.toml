@@ -10,9 +10,19 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+# `rlib` for Rust use; `cdylib` for the Python extension module
+# (`--features python`, built by maturin).
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# Python bindings (pyo3). Builds the cdylib as a CPython extension.
+python = ["dep:pyo3", "peerbus/python"]
+
+[profile.python]
+inherits = "dev"
 
 [dependencies]
-peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "f4b31c6155a294a10f5902167afae6f0b78aa528" }
+peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "8e91c6834d1d898b4a1c3b1477827dae1afa6c70" }
 authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.1" }
 datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
 serde = { version = "1.0", features = ["derive"] }
@@ -21,6 +31,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 thiserror = "2.0"
 tracing = "0.1"
+pyo3 = { version = "0.23", optional = true, features = ["abi3-py311", "extension-module"] }
 
 [dev-dependencies]
 agentio-example-messages = { path = "examples/shared_types" }

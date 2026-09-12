@@ -46,7 +46,7 @@ pub(crate) struct AgentInner {
     pub(crate) endpoint_id: EndpointId,
     pub(crate) directory_mode: DirectoryMode,
     pub(crate) bootstrap_peers: Vec<EndpointId>,
-    pub(crate) allowed_peers: Vec<EndpointId>,
+    pub(crate) allowed_peers: Mutex<Vec<EndpointId>>,
     pub(crate) allow_any_peer: bool,
     pub(crate) no_relay: bool,
     pub(crate) skip_shm: bool,
@@ -183,8 +183,26 @@ impl Agent {
     }
 
     /// Return the peers authorized to open inbound connections.
-    pub fn allowed_peers(&self) -> &[EndpointId] {
-        &self.inner.allowed_peers
+    pub fn allowed_peers(&self) -> Vec<EndpointId> {
+        self.inner.allowed_peers.lock().unwrap().clone()
+    }
+
+    /// Permit one more peer to open inbound connections to this live agent.
+    /// Takes effect for the peer's next connection; an agent built with
+    /// `allow_any_peer` is unchanged.
+    pub fn allow_peer(&self, peer: impl TryIntoBootstrapPeer) -> Result<()> {
+        let peer = peer.try_into_bootstrap_peer()?;
+        self.inner.node.allow_peer(peer);
+        let mut allowed = self.inner.allowed_peers.lock().unwrap();
+        if !allowed.contains(&peer) {
+            allowed.push(peer);
+        }
+        Ok(())
+    }
+
+    /// Whether an inbound connection from `peer` would be accepted now.
+    pub fn allows_peer(&self, peer: &EndpointId) -> bool {
+        self.inner.node.allows_peer(peer)
     }
 
     /// Return the configured directory mode.
@@ -863,6 +881,9 @@ fn announce_records(
 }
 
 pub(crate) fn withdraw_owned_entry(inner: &AgentInner, entry: &TopicEntry) {
+    // Serialised with renewal and adoption: the withdrawal must target the
+    // revision the directory holds at the moment it is signed.
+    let _hosting = inner.hosting.lock().unwrap();
     let key = (entry.topic().to_string(), entry.exchange());
     inner.hosted_records.lock().unwrap().remove(&key);
     inner.withdrawn.lock().unwrap().insert(key);
@@ -1243,6 +1264,7 @@ fn query_directory(
 }
 
 fn renew_hosted_records(config: &ControlLoopConfig, network: &ControlNetwork) -> usize {
+    let _hosting = config.hosting.lock().unwrap();
     let hosted: Vec<_> = config
         .hosted_records
         .lock()
