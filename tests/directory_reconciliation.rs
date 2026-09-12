@@ -322,3 +322,122 @@ fn persistent_owner_can_publish_after_restart() {
     assert!(after > before);
     drop(first_publisher);
 }
+
+mod adoption {
+    use agentio::{Agent, DirectoryMode, ExchangeKind, IdentitySource};
+    use peerbus::DatapodMsg;
+    use std::time::{Duration, Instant};
+
+    fn host(lease: Duration) -> Agent {
+        Agent::builder()
+            .identity(IdentitySource::Random)
+            .name("raw-host")
+            .directory(DirectoryMode::Replicated)
+            .allow_any_peer()
+            .lease_duration(lease)
+            .build()
+            .unwrap()
+    }
+
+    /// A topic opened on the raw peerbus node becomes a signed record on
+    /// demand, and a peer resolves it by name like any hosted topic.
+    #[test]
+    fn raw_node_topics_are_adopted_on_demand() {
+        let host = host(Duration::from_secs(30));
+        // The maintenance tick adopts at start-up and every lease third;
+        // open the raw topic between ticks.
+        std::thread::sleep(Duration::from_millis(300));
+        let mut raw = host.node().publisher::<DatapodMsg>("/raw/feed").unwrap();
+        assert!(host.resolve_topic("/raw/feed").is_err());
+        assert_eq!(host.adopt_hosted_topics().unwrap(), 1);
+        assert_eq!(host.adopt_hosted_topics().unwrap(), 0);
+        let entry = host.resolve_topic("/raw/feed").unwrap();
+        assert_eq!(entry.exchange(), ExchangeKind::PubSub);
+        assert_eq!(entry.endpoint_id(), host.endpoint_id());
+
+        let client = Agent::builder()
+            .identity(IdentitySource::Random)
+            .name("raw-client")
+            .directory(DirectoryMode::FrontDoor(host.endpoint_id()))
+            .bootstrap([host.endpoint_id()])
+            .allow_any_peer()
+            .build()
+            .unwrap();
+        let mut feed = client.subscribe::<DatapodMsg>("/raw/feed").unwrap();
+        let sent = DatapodMsg::new(7, vec![1, 2, 3]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = None;
+        while got.is_none() && Instant::now() < deadline {
+            raw.send(&sent).unwrap();
+            got = feed.recv_timeout(Duration::from_millis(100)).unwrap();
+        }
+        let sample = got.expect("the adopted topic delivers");
+        assert_eq!(sample.header().type_hash, 7);
+        assert_eq!(sample.payload(), &[1, 2, 3]);
+    }
+
+    /// Without any call, the maintenance tick adopts raw topics within a
+    /// lease period.
+    #[test]
+    fn raw_node_topics_are_adopted_by_maintenance() {
+        let host = host(Duration::from_millis(300));
+        let _raw = host.node().publisher::<DatapodMsg>("/raw/tick").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.resolve_topic("/raw/tick").is_err() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(host.resolve_topic("/raw/tick").is_ok());
+    }
+}
+
+mod participants {
+    use agentio::{Agent, DirectoryMode, Error, IdentitySource};
+    use peerbus::DatapodMsg;
+    use std::time::{Duration, Instant};
+
+    /// `publish_own` hosts under the builder's participant prefix, which a
+    /// peer reaches through `subscribe_in`.
+    #[test]
+    fn own_topics_carry_the_participant_prefix() {
+        let lidar = Agent::builder()
+            .identity(IdentitySource::Random)
+            .name("lidar-agent")
+            .participant("/lidar/")
+            .directory(DirectoryMode::Replicated)
+            .allow_any_peer()
+            .build()
+            .unwrap();
+        assert_eq!(lidar.participant(), Some("lidar"));
+        assert_eq!(lidar.own_topic("scan").unwrap(), "/lidar/scan");
+        assert_eq!(lidar.own_topic("/clock").unwrap(), "/clock");
+        let mut scans = lidar.publish_own::<DatapodMsg>("scan").unwrap();
+        assert_eq!(
+            lidar.resolve_topic("/lidar/scan").unwrap().endpoint_id(),
+            lidar.endpoint_id()
+        );
+        let mut clock = lidar.publish_in::<DatapodMsg>("global", "clock").unwrap();
+        assert!(lidar.resolve_topic("/global/clock").is_ok());
+
+        let reader = Agent::builder()
+            .identity(IdentitySource::Random)
+            .name("reader")
+            .directory(DirectoryMode::FrontDoor(lidar.endpoint_id()))
+            .bootstrap([lidar.endpoint_id()])
+            .allow_any_peer()
+            .build()
+            .unwrap();
+        assert!(matches!(
+            reader.own_topic("scan"),
+            Err(Error::Configuration(_))
+        ));
+        let mut feed = reader.subscribe_in::<DatapodMsg>("lidar", "scan").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = None;
+        while got.is_none() && Instant::now() < deadline {
+            scans.send(&DatapodMsg::new(1, vec![9])).unwrap();
+            clock.send(&DatapodMsg::new(2, vec![0])).unwrap();
+            got = feed.recv_timeout(Duration::from_millis(100)).unwrap();
+        }
+        assert_eq!(got.expect("scan delivered").header().type_hash, 1);
+    }
+}

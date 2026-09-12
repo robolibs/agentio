@@ -169,8 +169,11 @@ impl TopicEntry {
                 actual: self.body.exchange,
             });
         }
+        // A record adopted from a raw peerbus topic carries no response
+        // type; peerbus still checks it on the wire.
+        let response_known = self.body.response_type_hash.is_some();
         if self.body.request_type_hash != request_type_hash
-            || self.body.response_type_hash != response_type_hash
+            || (response_known && self.body.response_type_hash != response_type_hash)
         {
             return Err(Error::TypeMismatch {
                 topic: self.body.topic.clone(),

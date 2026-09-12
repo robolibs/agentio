@@ -17,6 +17,7 @@ use crate::naming::NameTable;
 /// Builder for constructing an `Agent` instance.
 pub struct AgentBuilder {
     pub(crate) name: Option<String>,
+    pub(crate) participant: Option<String>,
     pub(crate) identity_source: IdentitySource,
     pub(crate) directory_mode: DirectoryMode,
     pub(crate) bootstrap_peers: Vec<EndpointId>,
@@ -25,6 +26,7 @@ pub struct AgentBuilder {
     pub(crate) allow_any_peer: bool,
     pub(crate) no_relay: bool,
     pub(crate) skip_shm: bool,
+    pub(crate) rendezvous: bool,
     pub(crate) lease_duration: Duration,
     pub(crate) control_timeout: Duration,
     pub(crate) local_config: Option<peerbus::LocalConfig>,
@@ -37,6 +39,7 @@ impl AgentBuilder {
     pub fn new() -> Self {
         Self {
             name: None,
+            participant: None,
             identity_source: IdentitySource::Ephemeral,
             directory_mode: DirectoryMode::Replicated,
             bootstrap_peers: Vec::new(),
@@ -45,6 +48,7 @@ impl AgentBuilder {
             allow_any_peer: false,
             no_relay: false,
             skip_shm: false,
+            rendezvous: true,
             lease_duration: crate::directory::DEFAULT_LEASE_DURATION,
             control_timeout: Duration::from_secs(6),
             local_config: None,
@@ -69,6 +73,20 @@ impl AgentBuilder {
             self.identity_source = IdentitySource::Name(n.clone());
         }
         self.name = Some(n);
+        self
+    }
+
+    /// Participant prefix for this agent's own relative topics:
+    /// `publish_own("scan")` on a `participant("lidar")` agent hosts
+    /// `/lidar/scan`. Absolute topics are never prefixed.
+    pub fn participant(mut self, participant: impl Into<String>) -> Self {
+        let trimmed = participant.into().trim().trim_matches('/').to_string();
+        if trimmed.is_empty() {
+            self.configuration_errors
+                .push("participant prefix cannot be empty".to_string());
+        } else {
+            self.participant = Some(trimmed);
+        }
         self
     }
 
@@ -151,6 +169,14 @@ impl AgentBuilder {
         self
     }
 
+    /// Leave no host-local rendezvous record for this agent (see
+    /// [`crate::rendezvous`]); other processes on this host then cannot
+    /// find it by name.
+    pub fn no_rendezvous(mut self) -> Self {
+        self.rendezvous = false;
+        self
+    }
+
     /// Set the signed directory-record lease duration.
     pub fn lease_duration(mut self, lease_duration: Duration) -> Self {
         self.lease_duration = lease_duration.max(Duration::from_millis(30));
@@ -196,6 +222,22 @@ impl AgentBuilder {
         }
 
         let node = builder.bind()?;
+        let rendezvous = if self.rendezvous {
+            match crate::rendezvous::publish(
+                self.name.as_deref(),
+                self.participant.as_deref(),
+                &endpoint_id,
+                &node.endpoint_addr(),
+            ) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    tracing::warn!(%error, "agentio rendezvous record not written");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let directory = Directory::new();
         let name_table = NameTable::with_directory(directory.clone());
         let machine_name = self.name.clone().unwrap_or_else(|| "machine".to_string());
@@ -211,6 +253,8 @@ impl AgentBuilder {
         let server = node.req_server::<DatapodMsg, DatapodMsg>(RESOLUTION_TOPIC)?;
         let health = Arc::new(ControlPlaneHealth::default());
         let hosted_records = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let hosting = Arc::new(Mutex::new(()));
+        let withdrawn = Arc::new(Mutex::new(std::collections::HashSet::new()));
         let next_revision = Arc::new(AtomicU64::new(next_revision_seed()));
         let (resolver_shutdown_tx, resolver_shutdown_rx) = std::sync::mpsc::channel();
         let worker_health = health.clone();
@@ -238,6 +282,8 @@ impl AgentBuilder {
             name_table: name_table.clone(),
             machine_name: machine_name.clone(),
             hosted_records: hosted_records.clone(),
+            hosting: hosting.clone(),
+            withdrawn: withdrawn.clone(),
             next_revision: next_revision.clone(),
             health: health.clone(),
             lease_duration: self.lease_duration,
@@ -263,6 +309,7 @@ impl AgentBuilder {
             directory,
             name_table,
             machine_name,
+            participant: self.participant,
             endpoint_id,
             directory_mode: self.directory_mode,
             bootstrap_peers: self.bootstrap_peers,
@@ -275,6 +322,9 @@ impl AgentBuilder {
             health,
             next_revision,
             hosted_records,
+            rendezvous,
+            hosting,
+            withdrawn,
             control_tx,
             workers: Mutex::new(vec![
                 ControlWorker {

@@ -102,3 +102,57 @@ fn reconciliation_honors_configured_caller_timeout() {
     assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(agent.directory_health().stale_seeds, 1);
 }
+
+mod candidates {
+    use agentio::{Agent, DirectoryMode, IdentitySource};
+    use datapod::datapod;
+    use std::time::Duration;
+
+    #[datapod(name = "agentio.test.reading_a.v1")]
+    struct ReadingA {
+        pub value: u32,
+    }
+
+    #[datapod(name = "agentio.test.reading_b.v1")]
+    struct ReadingB {
+        pub value: u64,
+    }
+
+    const TOPIC: &str = "/candidates/reading";
+
+    /// The first seed answers with a record of the wrong type; the query
+    /// must go on and take the second seed's record once it exists.
+    #[test]
+    fn query_continues_past_a_bad_candidate() {
+        let seed = |name: &str| {
+            Agent::builder()
+                .identity(IdentitySource::Random)
+                .name(name)
+                .directory(DirectoryMode::Replicated)
+                .allow_any_peer()
+                .build()
+                .unwrap()
+        };
+        let wrong = seed("wrong-seed");
+        let right = seed("right-seed");
+        let _wrong_publisher = wrong.publish::<ReadingA>(TOPIC).unwrap();
+        // Polled first: the query walks its candidates from the last one.
+        let client = Agent::builder()
+            .identity(IdentitySource::Random)
+            .name("client")
+            .directory(DirectoryMode::Replicated)
+            .allow_any_peer()
+            .bootstrap([right.endpoint_id(), wrong.endpoint_id()])
+            .control_timeout(Duration::from_secs(4))
+            .build()
+            .unwrap();
+        let resolving = std::thread::spawn(move || client.subscribe::<ReadingB>(TOPIC).map(|_| ()));
+        std::thread::sleep(Duration::from_millis(400));
+        let _right_publisher = right.publish::<ReadingB>(TOPIC).unwrap();
+        let outcome = resolving.join().unwrap();
+        assert!(
+            outcome.is_ok(),
+            "query gave up after the bad candidate: {outcome:?}"
+        );
+    }
+}

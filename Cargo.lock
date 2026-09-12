@@ -42,12 +42,13 @@ name = "agentio"
 version = "0.1.0"
 dependencies = [
  "agentio-example-messages",
- "authbox",
+ "authbox 0.1.1",
  "blake3",
  "datapod",
  "peerbus",
  "postcard",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -170,7 +171,28 @@ dependencies = [
  "getrandom 0.2.17",
  "httparse",
  "json5",
- "keylock",
+ "keylock 0.1.0",
+ "pkcs8 0.10.2",
+ "rand 0.8.7",
+ "reqwest 0.12.28",
+ "rsa",
+ "sec1",
+ "serde_json",
+ "x25519-dalek",
+]
+
+[[package]]
+name = "authbox"
+version = "0.1.1"
+source = "git+https://codeberg.org/robolibs/authbox.git?tag=0.1.1#b22094a1f9742072542f523608ca226969a702f1"
+dependencies = [
+ "base64ct",
+ "bs58",
+ "crypto_secretbox",
+ "getrandom 0.2.17",
+ "httparse",
+ "json5",
+ "keylock 0.1.1",
  "pkcs8 0.10.2",
  "rand 0.8.7",
  "reqwest 0.12.28",
@@ -2038,6 +2060,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "keylock"
+version = "0.1.1"
+source = "git+https://codeberg.org/robolibs/keylock.git?tag=0.1.1#998cfac26b8e307280f7f30f62dfe9c0e465b5d2"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "argon2",
+ "blake2",
+ "chacha20 0.9.1",
+ "chacha20poly1305",
+ "crypto_secretbox",
+ "ed25519-dalek 2.2.0",
+ "ed448-goldilocks-plus",
+ "getrandom 0.2.17",
+ "hkdf",
+ "hmac",
+ "k256",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "p256",
+ "p384",
+ "p521",
+ "pkcs8 0.10.2",
+ "poly1305",
+ "rand_core 0.6.4",
+ "rsa",
+ "sha2 0.10.9",
+ "sha3",
+ "skein",
+ "sm3",
+ "streebog",
+ "subtle",
+ "whirlpool",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2743,7 +2804,7 @@ name = "peerbus"
 version = "0.4.0"
 source = "git+https://codeberg.org/robolibs/peerbus.git?rev=f4b31c6155a294a10f5902167afae6f0b78aa528#f4b31c6155a294a10f5902167afae6f0b78aa528"
 dependencies = [
- "authbox",
+ "authbox 0.1.0",
  "blake3",
  "bytemuck",
  "bytes",

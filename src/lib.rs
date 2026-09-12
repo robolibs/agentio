@@ -17,6 +17,8 @@ pub mod escape;
 pub mod identity;
 /// Topic normalization and machine-name mappings.
 pub mod naming;
+/// Host-local rendezvous records of live agents.
+pub mod rendezvous;
 
 pub use agent::{Agent, AgentBuilder, DirectoryMode, Registered, TryIntoBootstrapPeer};
 pub use authbox;
@@ -32,3 +34,4 @@ pub use identity::{
 };
 pub use naming::{Machine, NameTable, normalize_topic, qualify_participant_topic};
 pub use peerbus::{DatapodMsg, LocalConfig};
+pub use rendezvous::{LocalAgent, find_local, find_local_did, local_agents, rendezvous_dir};

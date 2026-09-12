@@ -96,3 +96,55 @@ mod restart {
         );
     }
 }
+
+mod rendezvous {
+    use agentio::{Agent, DirectoryMode, IdentitySource, find_local, local_agents, rendezvous_dir};
+
+    /// A built agent is findable by name on this host, can seed a peer, and
+    /// vanishes with its drop; a record of a dead process is pruned.
+    #[test]
+    fn live_agents_are_found_by_name_and_pruned_when_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("AGENTIO_RENDEZVOUS_DIR", dir.path()) };
+        assert_eq!(rendezvous_dir(), dir.path());
+        std::fs::write(
+            dir.path().join("dead.json"),
+            r#"{"name":"ghost","participant":null,"did":"did:key:z6Mkghost","addr":"00","pid":4294967295,"started_unix_ms":0}"#,
+        )
+        .unwrap();
+
+        let host = Agent::builder()
+            .identity(IdentitySource::Random)
+            .name("rendezvous-host")
+            .participant("sim")
+            .directory(DirectoryMode::Replicated)
+            .allow_any_peer()
+            .build()
+            .unwrap();
+        assert!(host.rendezvous_path().is_some_and(|p| p.exists()));
+        let found = find_local("rendezvous-host").expect("the live host is listed");
+        assert_eq!(found.endpoint_id().unwrap(), host.endpoint_id());
+        assert_eq!(found.participant.as_deref(), Some("sim"));
+        assert_eq!(found.pid, std::process::id());
+        assert_eq!(found.endpoint_addr().unwrap().id, host.endpoint_id());
+        assert!(find_local("ghost").is_none());
+        assert!(!dir.path().join("dead.json").exists());
+
+        let client = Agent::builder()
+            .identity(IdentitySource::Random)
+            .bootstrap([&found])
+            .allow_any_peer()
+            .no_rendezvous()
+            .build()
+            .unwrap();
+        assert_eq!(client.bootstrap_peers(), &[host.endpoint_id()]);
+        assert!(client.rendezvous_path().is_none());
+        assert_eq!(local_agents().len(), 1);
+
+        let path = host.rendezvous_path().unwrap().to_path_buf();
+        drop(host);
+        assert!(!path.exists());
+        assert!(find_local("rendezvous-host").is_none());
+        unsafe { std::env::remove_var("AGENTIO_RENDEZVOUS_DIR") };
+    }
+}

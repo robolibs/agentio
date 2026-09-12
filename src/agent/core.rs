@@ -42,6 +42,7 @@ pub(crate) struct AgentInner {
     pub(crate) directory: Directory,
     pub(crate) name_table: NameTable,
     pub(crate) machine_name: String,
+    pub(crate) participant: Option<String>,
     pub(crate) endpoint_id: EndpointId,
     pub(crate) directory_mode: DirectoryMode,
     pub(crate) bootstrap_peers: Vec<EndpointId>,
@@ -54,6 +55,13 @@ pub(crate) struct AgentInner {
     pub(crate) health: Arc<ControlPlaneHealth>,
     pub(crate) next_revision: Arc<AtomicU64>,
     pub(crate) hosted_records: Arc<Mutex<std::collections::HashMap<HostedKey, HostedRecord>>>,
+    pub(crate) rendezvous: Option<std::path::PathBuf>,
+    /// Held while a handle is created and registered, and by the adopter
+    /// while it scans, so a topic is never adopted mid-registration.
+    pub(crate) hosting: Arc<Mutex<()>>,
+    /// Keys the agent withdrew on purpose; the adopter leaves those alone
+    /// even while peerbus still lists the topic.
+    pub(crate) withdrawn: Arc<Mutex<std::collections::HashSet<HostedKey>>>,
     pub(crate) control_tx: mpsc::SyncSender<ControlCommand>,
     pub(crate) workers: Mutex<Vec<ControlWorker>>,
 }
@@ -88,6 +96,9 @@ pub(crate) struct ControlWorker {
 
 impl Drop for AgentInner {
     fn drop(&mut self) {
+        if self.rendezvous.is_some() {
+            crate::rendezvous::withdraw(&self.endpoint_id);
+        }
         let workers = match self.workers.get_mut() {
             Ok(workers) => std::mem::take(workers),
             Err(poisoned) => std::mem::take(poisoned.into_inner()),
@@ -242,6 +253,7 @@ impl Agent {
         <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
+        let _hosting = self.inner.hosting.lock().unwrap();
         let publisher = self.inner.node.publisher::<T>(&normalized)?;
         let entry = TopicEntry::signed(
             TopicRecordSpec::new(
@@ -283,6 +295,85 @@ impl Agent {
             .map_err(Into::into)
     }
 
+    /// The host-local rendezvous record this agent wrote, if any.
+    pub fn rendezvous_path(&self) -> Option<&std::path::Path> {
+        self.inner.rendezvous.as_deref()
+    }
+
+    /// Sign directory records for the topics the peerbus node hosts through
+    /// [`Agent::node`] that the directory does not know yet, and announce
+    /// them. The maintenance tick does this on its own every lease third;
+    /// call it to make raw node topics visible at once. Returns how many
+    /// records were added. peerbus keeps a topic listed after its raw
+    /// handle drops, so an adopted record lives until the agent does; a
+    /// record the agent withdrew itself is never adopted again.
+    pub fn adopt_hosted_topics(&self) -> Result<usize> {
+        let adopted = adopt_node_topics(
+            &self.inner.node,
+            &self.inner.directory,
+            &self.inner.hosted_records,
+            &self.inner.hosting,
+            &self.inner.withdrawn,
+            &self.inner.name_table,
+            &self.inner.next_revision,
+            &self.inner.machine_name,
+            &self.inner.secret,
+            self.inner.lease_duration,
+        );
+        if !adopted.is_empty() {
+            queue_control_command(&self.inner, ControlCommand::Announce(adopted.clone()));
+        }
+        Ok(adopted.len())
+    }
+
+    /// Register a hosted publisher for a topic scoped to a participant name
+    /// (`publish_in("perception", "scan")` hosts `/perception/scan`); an
+    /// absolute topic is left as it is.
+    pub fn publish_in<T>(&self, participant: &str, topic: &str) -> Result<Registered<Publisher<T>>>
+    where
+        T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
+    {
+        self.publish::<T>(&qualify_participant_topic(participant, topic)?)
+    }
+
+    /// Register a hosted publisher for a topic under this agent's own
+    /// participant prefix (see [`AgentBuilder::participant`]).
+    pub fn publish_own<T>(&self, topic: &str) -> Result<Registered<Publisher<T>>>
+    where
+        T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
+    {
+        self.publish::<T>(&self.own_topic(topic)?)
+    }
+
+    /// Subscribe to a topic under this agent's own participant prefix.
+    pub fn subscribe_own<T>(&self, topic: &str) -> Result<Subscriber<T>>
+    where
+        T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
+    {
+        self.subscribe::<T>(&self.own_topic(topic)?)
+    }
+
+    /// The participant prefix this agent qualifies its own relative topics
+    /// with, if the builder set one.
+    pub fn participant(&self) -> Option<&str> {
+        self.inner.participant.as_deref()
+    }
+
+    /// A relative topic under this agent's participant prefix; absolute
+    /// topics pass through. Fails when no participant is configured.
+    pub fn own_topic(&self, topic: &str) -> Result<String> {
+        match self.inner.participant.as_deref() {
+            Some(participant) => qualify_participant_topic(participant, topic),
+            None if topic.trim_start().starts_with('/') => normalize_topic(topic),
+            None => Err(Error::Configuration(format!(
+                "relative topic '{topic}' needs a participant prefix; set AgentBuilder::participant"
+            ))),
+        }
+    }
+
     /// Subscribe to a topic scoped to a specific participant name (e.g. `subscribe_in("perception", "scan")` -> `/perception/scan`).
     pub fn subscribe_in<T>(&self, participant: &str, topic: &str) -> Result<Subscriber<T>>
     where
@@ -312,6 +403,7 @@ impl Agent {
         <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
+        let _hosting = self.inner.hosting.lock().unwrap();
         let mut server = self.inner.node.req_server::<Req, Res>(&normalized)?;
         drop_predecessor_traffic(&normalized, || Ok(server.take()?.is_some()))?;
         let entry = TopicEntry::signed(
@@ -361,6 +453,7 @@ impl Agent {
         <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
+        let _hosting = self.inner.hosting.lock().unwrap();
         let mut server = self.inner.node.que_server::<Que, Ans>(&normalized)?;
         drop_predecessor_traffic(&normalized, || Ok(server.take()?.is_some()))?;
         let entry = TopicEntry::signed(
@@ -410,6 +503,7 @@ impl Agent {
         <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
+        let _hosting = self.inner.hosting.lock().unwrap();
         let mut server = self.inner.node.put_server::<Put, Ack>(&normalized)?;
         drop_predecessor_traffic(&normalized, || Ok(server.take()?.is_some()))?;
         let entry = TopicEntry::signed(
@@ -462,6 +556,7 @@ impl Agent {
         <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let normalized = normalize_topic(topic)?;
+        let _hosting = self.inner.hosting.lock().unwrap();
         let server = self
             .inner
             .node
@@ -577,6 +672,11 @@ impl Agent {
 
     fn register_hosted(&self, entry: &TopicEntry) -> Result<()> {
         self.inner.directory.register(entry.clone())?;
+        self.inner
+            .withdrawn
+            .lock()
+            .unwrap()
+            .remove(&(entry.topic().to_string(), entry.exchange()));
         self.inner.hosted_records.lock().unwrap().insert(
             (entry.topic().to_string(), entry.exchange()),
             HostedRecord {
@@ -763,13 +863,19 @@ fn announce_records(
 }
 
 pub(crate) fn withdraw_owned_entry(inner: &AgentInner, entry: &TopicEntry) {
-    inner
-        .hosted_records
-        .lock()
-        .unwrap()
-        .remove(&(entry.topic().to_string(), entry.exchange()));
+    let key = (entry.topic().to_string(), entry.exchange());
+    inner.hosted_records.lock().unwrap().remove(&key);
+    inner.withdrawn.lock().unwrap().insert(key);
+    // Renewals re-sign the record with fresher revisions after the handle
+    // took its copy; a withdrawal binds to one exact revision, so it must
+    // target what the directory holds now.
+    let current = inner
+        .directory
+        .lookup_exchange(entry.topic(), entry.exchange())
+        .filter(|live| live.endpoint_id() == inner.endpoint_id)
+        .unwrap_or_else(|| entry.clone());
     let revision = inner.next_revision.fetch_add(1, Ordering::Relaxed);
-    let Ok(withdrawal) = TopicWithdrawal::signed(entry, revision, &inner.secret) else {
+    let Ok(withdrawal) = TopicWithdrawal::signed(&current, revision, &inner.secret) else {
         inner.health.announcement_failed();
         return;
     };
@@ -922,6 +1028,8 @@ pub(crate) struct ControlLoopConfig {
     pub(crate) name_table: NameTable,
     pub(crate) machine_name: String,
     pub(crate) hosted_records: Arc<Mutex<std::collections::HashMap<HostedKey, HostedRecord>>>,
+    pub(crate) hosting: Arc<Mutex<()>>,
+    pub(crate) withdrawn: Arc<Mutex<std::collections::HashSet<HostedKey>>>,
     pub(crate) next_revision: Arc<AtomicU64>,
     pub(crate) health: Arc<ControlPlaneHealth>,
     pub(crate) lease_duration: Duration,
@@ -962,6 +1070,18 @@ pub(crate) fn run_control_loop(
         }
         if Instant::now() >= next_maintenance {
             let _ = reconcile_directory(&config, &network);
+            adopt_node_topics(
+                &config.node,
+                &config.directory,
+                &config.hosted_records,
+                &config.hosting,
+                &config.withdrawn,
+                &config.name_table,
+                &config.next_revision,
+                &config.machine_name,
+                &config.secret,
+                config.lease_duration,
+            );
             renew_hosted_records(&config, &network);
             next_maintenance = Instant::now() + control_interval;
         }
@@ -1049,6 +1169,7 @@ fn query_directory(
             pending.push((*target_id, response));
         }
     }
+    let mut rejected: Option<Error> = None;
     while Instant::now() < deadline && !pending.is_empty() {
         let mut progressed = false;
         for index in (0..pending.len()).rev() {
@@ -1063,8 +1184,24 @@ fn query_directory(
                         progressed = true;
                         continue;
                     }
-                    entry.validate_exchange(*exchange, *request_type_hash, *response_type_hash)?;
-                    config.directory.register(entry.clone())?;
+                    // One candidate answering with a record this caller cannot use
+                    // (wrong exchange, wrong types, a stale revision) must not end
+                    // the query while other candidates are still to answer.
+                    let accepted = entry
+                        .validate_exchange(*exchange, *request_type_hash, *response_type_hash)
+                        .and_then(|()| config.directory.register(entry.clone()));
+                    if let Err(error) = accepted {
+                        tracing::debug!(
+                            target_id = %pending[index].0,
+                            %error,
+                            "directory candidate answer rejected"
+                        );
+                        config.health.reject_record();
+                        rejected = Some(error);
+                        pending.swap_remove(index);
+                        progressed = true;
+                        continue;
+                    }
                     config
                         .name_table
                         .sync_from_entries(&config.directory.all_entries());
@@ -1096,6 +1233,9 @@ fn query_directory(
         if !progressed {
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+    if let Some(error) = rejected {
+        return Err(error);
     }
     Err(Error::ResolutionFailed(format!(
         "topic '{topic}' could not be resolved within the agent composition"
@@ -1291,4 +1431,79 @@ fn drop_predecessor_traffic(topic: &str, mut take_one: impl FnMut() -> Result<bo
         tracing::debug!(topic, dropped, "dropped traffic that predates this server");
     }
     Ok(())
+}
+
+/// Sign a directory record for every topic the peerbus node hosts that the
+/// directory does not know: topics opened through `Agent::node()` instead of
+/// the agent. The response type of two-type exchanges is not known here, so
+/// those records carry none. Returns the records added.
+#[allow(clippy::too_many_arguments)]
+fn adopt_node_topics(
+    node: &Node,
+    directory: &Directory,
+    hosted_records: &Mutex<std::collections::HashMap<HostedKey, HostedRecord>>,
+    hosting: &Mutex<()>,
+    withdrawn: &Mutex<std::collections::HashSet<HostedKey>>,
+    name_table: &NameTable,
+    next_revision: &AtomicU64,
+    machine_name: &str,
+    secret: &peerbus::SecretKey,
+    lease_duration: Duration,
+) -> Vec<TopicEntry> {
+    let _hosting = hosting.lock().unwrap();
+    let mut adopted = Vec::new();
+    for hosted in node.hosted_topics() {
+        let exchange = match hosted.mode {
+            peerbus::TopicMode::PubSub => ExchangeKind::PubSub,
+            peerbus::TopicMode::ReqRes => ExchangeKind::ReqRes,
+            peerbus::TopicMode::QueAns => ExchangeKind::QueAns,
+            peerbus::TopicMode::PutAck => ExchangeKind::PutAck,
+            peerbus::TopicMode::Pip => ExchangeKind::Pip,
+        };
+        // The agent's own resolver is peerbus-hosted too, under its raw name.
+        if hosted.topic == RESOLUTION_TOPIC {
+            continue;
+        }
+        let Ok(topic) = normalize_topic(&hosted.topic) else {
+            continue;
+        };
+        let key = (topic.clone(), exchange);
+        if hosted_records.lock().unwrap().contains_key(&key)
+            || withdrawn.lock().unwrap().contains(&key)
+        {
+            continue;
+        }
+        let spec = TopicRecordSpec::new(
+            &topic,
+            exchange,
+            hosted.type_hash,
+            None,
+            next_revision.fetch_add(1, Ordering::Relaxed),
+            Some(machine_name),
+        )
+        .lease_expires_at_ms(
+            unix_time_ms()
+                .saturating_add(lease_duration.as_millis().try_into().unwrap_or(u64::MAX)),
+        );
+        let Ok(entry) = TopicEntry::signed(spec, secret) else {
+            continue;
+        };
+        if directory.register(entry.clone()).is_err() {
+            continue;
+        }
+        hosted_records.lock().unwrap().insert(
+            key,
+            HostedRecord {
+                topic,
+                exchange,
+                request_type_hash: hosted.type_hash,
+                response_type_hash: None,
+            },
+        );
+        adopted.push(entry);
+    }
+    if !adopted.is_empty() {
+        name_table.sync_from_entries(&directory.all_entries());
+    }
+    adopted
 }
