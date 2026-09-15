@@ -44,7 +44,7 @@ dependencies = [
  "agentio-example-messages",
  "authbox",
  "blake3",
- "datapod",
+ "datapod 0.5.0",
  "peerbus",
  "postcard",
  "pyo3",
@@ -61,7 +61,7 @@ dependencies = [
 name = "agentio-example-messages"
 version = "0.0.0"
 dependencies = [
- "datapod",
+ "datapod 0.4.1",
 ]
 
 [[package]]
@@ -727,13 +727,32 @@ version = "0.4.1"
 source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.1#bcf4eb86033ee945d5b5f6a48f6d55a92026c837"
 dependencies = [
  "bytemuck",
- "datapod-macros",
+ "datapod-macros 0.0.1 (git+https://codeberg.org/robolibs/datapod.git?tag=0.4.1)",
+]
+
+[[package]]
+name = "datapod"
+version = "0.5.0"
+source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.5.0#da9b8c04db46c26455227b69053697d9608ed7a0"
+dependencies = [
+ "bytemuck",
+ "datapod-macros 0.0.1 (git+https://codeberg.org/robolibs/datapod.git?tag=0.5.0)",
 ]
 
 [[package]]
 name = "datapod-macros"
 version = "0.0.1"
 source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.1#bcf4eb86033ee945d5b5f6a48f6d55a92026c837"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "datapod-macros"
+version = "0.0.1"
+source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.5.0#da9b8c04db46c26455227b69053697d9608ed7a0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2761,13 +2780,13 @@ dependencies = [
 [[package]]
 name = "peerbus"
 version = "0.4.0"
-source = "git+https://codeberg.org/robolibs/peerbus.git?rev=8e91c6834d1d898b4a1c3b1477827dae1afa6c70#8e91c6834d1d898b4a1c3b1477827dae1afa6c70"
+source = "git+https://codeberg.org/robolibs/peerbus.git?rev=8aec5611fdf3f0bf5fcdd969c8d96d2f66745cb4#8aec5611fdf3f0bf5fcdd969c8d96d2f66745cb4"
 dependencies = [
  "authbox",
  "blake3",
  "bytemuck",
  "bytes",
- "datapod",
+ "datapod 0.5.0",
  "iroh",
  "libc",
  "postcard",

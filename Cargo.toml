@@ -22,9 +22,9 @@ python = ["dep:pyo3", "peerbus/python"]
 inherits = "dev"
 
 [dependencies]
-peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "8e91c6834d1d898b4a1c3b1477827dae1afa6c70" }
+peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "8aec5611fdf3f0bf5fcdd969c8d96d2f66745cb4" }
 authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.1" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.5.0" }
 serde = { version = "1.0", features = ["derive"] }
 postcard = { version = "1.0", default-features = false, features = ["use-std"] }
 serde_json = "1"
@@ -34,7 +34,7 @@ tracing = "0.1"
 pyo3 = { version = "0.23", optional = true, features = ["abi3-py311", "extension-module"] }
 
 [dev-dependencies]
-agentio-example-messages = { path = "examples/shared_types" }
+agentio-example-messages = { path = "examples/rust/shared_types" }
 blake3 = { version = "1", default-features = false }
 tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
