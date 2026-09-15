@@ -38,3 +38,47 @@ agentio-example-messages = { path = "examples/shared_types" }
 blake3 = { version = "1", default-features = false }
 tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "01_single_machine"
+path = "examples/rust/01_single_machine.rs"
+
+[[example]]
+name = "02_referral_resolution"
+path = "examples/rust/02_referral_resolution.rs"
+
+[[example]]
+name = "03_req_res_service"
+path = "examples/rust/03_req_res_service.rs"
+
+[[example]]
+name = "04_by_id_escape"
+path = "examples/rust/04_by_id_escape.rs"
+
+[[example]]
+name = "05_all_exchanges"
+path = "examples/rust/05_all_exchanges.rs"
+
+[[example]]
+name = "06_server_all"
+path = "examples/rust/06_server_all.rs"
+
+[[example]]
+name = "07_client_all"
+path = "examples/rust/07_client_all.rs"
+
+[[example]]
+name = "08_heavy_server"
+path = "examples/rust/08_heavy_server.rs"
+
+[[example]]
+name = "09_heavy_client"
+path = "examples/rust/09_heavy_client.rs"
+
+[[example]]
+name = "10_camera_publisher"
+path = "examples/rust/10_camera_publisher.rs"
+
+[[example]]
+name = "11_camera_subscriber"
+path = "examples/rust/11_camera_subscriber.rs"
