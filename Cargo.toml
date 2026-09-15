@@ -24,7 +24,7 @@ inherits = "dev"
 [dependencies]
 peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "8aec5611fdf3f0bf5fcdd969c8d96d2f66745cb4" }
 authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.1" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.5.0" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.6.0" }
 serde = { version = "1.0", features = ["derive"] }
 postcard = { version = "1.0", default-features = false, features = ["use-std"] }
 serde_json = "1"
