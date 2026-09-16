@@ -22,9 +22,9 @@ python = ["dep:pyo3", "peerbus/python"]
 inherits = "dev"
 
 [dependencies]
-peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "4dd4e6d4237758b3081943affc2a0828f8adcb0c" }
+peerbus = { git = "https://codeberg.org/robolibs/peerbus.git", rev = "29f705f39b4eed11f0e2e5837811e26b7396259d" }
 authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.1" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.6.1" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.6.2" }
 serde = { version = "1.0", features = ["derive"] }
 postcard = { version = "1.0", default-features = false, features = ["use-std"] }
 serde_json = "1"
