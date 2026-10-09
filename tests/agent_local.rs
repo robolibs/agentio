@@ -1,5 +1,5 @@
 mod all_exchanges {
-    include!("../examples/05_all_exchanges.rs");
+    include!("../examples/rust/05_all_exchanges.rs");
 
     pub(super) fn run_local() {
         main().unwrap();
