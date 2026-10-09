@@ -5,4 +5,4 @@ edition = "2024"
 publish = false
 
 [dependencies]
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
+datapod = { git = "https://github.com/robolibs/datapod", tag = "0.6.2" }
