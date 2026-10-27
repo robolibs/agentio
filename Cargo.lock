@@ -2648,7 +2648,7 @@ dependencies = [
 [[package]]
 name = "peerbus"
 version = "0.4.2"
-source = "git+https://github.com/robolibs/peerbus?rev=eb44b44a26ad1f323dca78d25d6095a44927c3bd#eb44b44a26ad1f323dca78d25d6095a44927c3bd"
+source = "git+https://github.com/robolibs/peerbus?rev=f3562d62e81d467e9707d29341181f2ecd3f7dac#f3562d62e81d467e9707d29341181f2ecd3f7dac"
 dependencies = [
  "authbox",
  "blake3",
